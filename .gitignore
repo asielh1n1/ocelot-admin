@@ -1,0 +1,11 @@
+/obj
+/bin
+/.vs
+/Plugins
+/tmp
+/certs
+/identity.db
+/identity.db-shm
+/identity.db-wal
+/ocelot.json
+/Properties

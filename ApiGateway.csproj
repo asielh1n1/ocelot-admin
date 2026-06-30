@@ -1,0 +1,69 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <TypeScriptCompileOnSaveEnabled>False</TypeScriptCompileOnSaveEnabled>
+    <TypeScriptNoEmitOnError>False</TypeScriptNoEmitOnError>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Configuration">
+    <TypeScriptCompileOnSaveEnabled>False</TypeScriptCompileOnSaveEnabled>
+    <TypeScriptNoEmitOnError>False</TypeScriptNoEmitOnError>
+	<TypeScriptCompileBlocked>true</TypeScriptCompileBlocked>
+	  <TypeScriptToolsVersion>3.9</TypeScriptToolsVersion>
+	  <TypeScriptEnabled>false</TypeScriptEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <DockerfileContext>.</DockerfileContext>
+    <ApplicationIcon>logo.ico</ApplicationIcon>
+    <AssemblyTitle>QvaSoft Gateway</AssemblyTitle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="logo.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.2" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client.Core" Version="10.0.2" />
+	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.2">
+		<PrivateAssets>all</PrivateAssets>
+		<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+	</PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Logging.Log4Net.AspNetCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0-preview.4" />
+    <PackageReference Include="MMLib.SwaggerForOcelot" Version="10.0.0" />
+    <PackageReference Include="Ocelot" Version="24.1.0" />
+    <PackageReference Include="Ocelot.Cache.CacheManager" Version="24.1.0" />
+    <PackageReference Include="Ocelot.Provider.Polly" Version="24.1.0" />
+    <PackageReference Include="Ocelot.Tracing.OpenTracing" Version="24.1.0" />
+    <PackageReference Include="Scrutor" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Update="ocelot.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="certificate.pfx">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Plugins\" />
+  </ItemGroup>
+
+  <ProjectExtensions><VisualStudio><UserProperties ocelot_1json__JsonSchema="https://carafe.fm/schema/draft-02/bundle.schema.json" /></VisualStudio></ProjectExtensions>
+
+</Project>
