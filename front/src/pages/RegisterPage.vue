@@ -24,15 +24,6 @@
                 lazy-rules
                 :rules="[val => val && val.length > 0 || $t('required_field')]"
               />
-              <q-select
-                v-model="form.clientType"
-                :options="clientTypeOptions"
-                :label="$t('client_type') + ' *'"
-                emit-value
-                map-options
-                lazy-rules
-                :rules="[val => !!val || $t('required_field')]"
-              />
               <q-input
                 v-model="form.password"
                 type="password"
@@ -79,15 +70,10 @@ export default defineComponent({
       form: {
         email: '',
         fullName: '',
-        clientType: '',
         password: ''
       },
       loading: false,
-      error: '',
-      clientTypeOptions: [
-        { label: this.$t('personal'), value: 'personal' },
-        { label: this.$t('company'), value: 'company' }
-      ]
+      error: ''
     }
   },
   methods: {

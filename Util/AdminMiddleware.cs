@@ -205,12 +205,6 @@ namespace ApiGateway.Util
                     await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "Full name is required." }));
                     return;
                 }
-                if (string.IsNullOrWhiteSpace(reg.ClientType) || (reg.ClientType != "personal" && reg.ClientType != "company"))
-                {
-                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "Type client must be 'Personal' or 'Company'." }));
-                    return;
-                }
                 if (string.IsNullOrWhiteSpace(reg.Password))
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;

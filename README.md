@@ -34,7 +34,6 @@ cd /front
 
 #### Install the dependencies
 ```bash
-cd /front
 yarn
 # or
 npm install

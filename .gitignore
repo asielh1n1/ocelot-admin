@@ -9,3 +9,6 @@
 /identity.db-wal
 /ocelot.json
 /Properties
+/.vscode
+/.config
+/.gitattributes
