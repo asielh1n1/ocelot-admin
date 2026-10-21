@@ -1,11 +1,19 @@
 name: Release
 
-# Triggered by a version tag such as v1.0.0. Produces:
-#   - self-contained binaries for Windows / Linux x64 / Linux arm64 (GitHub Release)
+# Triggered by a version tag such as v1.0.0, or manually from the Actions tab.
+# Produces:
+#   - framework-dependent binaries with a native apphost (Windows / Linux x64 / arm64)
 #   - a multi-arch container image pushed to GitHub Container Registry
+#   - a GitHub Release with the archives attached
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without the leading "v" (e.g. 1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write    # create the GitHub Release
@@ -20,7 +28,7 @@ env:
 
 jobs:
   # -------------------------------------------------------------------------
-  # Binaries: one self-contained zip per platform
+  # Binaries: one framework-dependent zip per platform (native apphost included)
   # -------------------------------------------------------------------------
   binaries:
     name: Binaries (${{ matrix.rid }})
@@ -44,9 +52,17 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Resolve version from tag
+      - name: Resolve version
         id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          else
+            RAW="${GITHUB_REF_NAME}"
+          fi
+          VALUE="${RAW#v}"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VALUE"
 
       - name: Publish (framework-dependent, with native apphost)
         run: |
@@ -131,6 +147,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          else
+            RAW="${GITHUB_REF_NAME}"
+          fi
+          echo "value=${RAW#v}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v3
 
@@ -150,9 +176,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.value }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.value }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.value }}
             type=raw,value=latest
 
       - name: Build and push
@@ -177,28 +203,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+          else
+            RAW="${GITHUB_REF_NAME}"
+          fi
+          VALUE="${RAW#v}"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VALUE" >> "$GITHUB_OUTPUT"
+
+      # Only the binary archives: build-push-action also stores a GHA cache
+      # artifact (named <owner>~<repo>~<id>.dockerbuild) that cannot be extracted.
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+          pattern: binaries-*
+
+      - name: Verify the expected archives are present
+        run: |
+          set -e
+          echo "Downloaded files:"
+          ls -lh artifacts
+
+          EXPECTED=3
+          COUNT=$(find artifacts -maxdepth 1 -name 'ocelot-admin-*.zip' | wc -l)
+          if [ "$COUNT" -ne "$EXPECTED" ]; then
+            echo "::error::Expected $EXPECTED archives, found $COUNT."
+            exit 1
+          fi
+          echo "OK: $COUNT archives ready to attach."
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           files: artifacts/*.zip
           generate_release_notes: true
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(steps.version.outputs.value, '-') }}
           body: |
-            ## Ocelot Admin ${{ github.ref_name }}
+            ## Ocelot Admin v${{ steps.version.outputs.value }}
 
             ### Container image
             ```bash
-            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
             docker run -p 4000:8080 \
               -e AppSetting__AdminApi__SigningKey="<your-key>" \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+              ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
             ```
 
             ### Binaries
@@ -219,5 +276,5 @@ jobs:
 
             ### Plugin contract
             ```bash
-            dotnet add package ocelot-admin-plugin --version ${{ github.ref_name }}
+            dotnet add package ocelot-admin-plugin --version ${{ steps.version.outputs.value }}
             ```
