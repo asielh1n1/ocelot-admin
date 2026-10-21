@@ -127,9 +127,14 @@ public class PluginService : IPluginService
             }
             catch (Exception ex)
             {
-                // Never log the metadata dictionary itself: it may contain secrets.
-                _logger.LogError(ex, "Plugin {PluginName} failed to initialize", info.Name);
-                throw;
+                // A plugin that cannot initialize is a misconfiguration, not a fatal host error:
+                // the gateway must still serve traffic (and /health) so operators can reach the
+                // admin panel to fix it. Never log the metadata dictionary itself: it may
+                // contain secrets. Only the keys that were supplied are reported.
+                _logger.LogError(ex,
+                    "Plugin {PluginName} failed to initialize and was disabled. " +
+                    "Check the '{Section}:{PluginName}' configuration section.",
+                    info.Name, MetadataSectionName, info.Name);
             }
         }
     }
@@ -208,9 +213,10 @@ public class PluginService : IPluginService
         }
         else
         {
-            _logger.LogDebug(
-                "No {Section}:{PluginName} configuration section found; the plugin will receive empty metadata",
-                MetadataSectionName, info.Name);
+            _logger.LogWarning(
+                "No '{Section}:{PluginName}' configuration section found; the plugin will receive empty metadata. " +
+                "Available sections: {AvailableKeys}",
+                MetadataSectionName, info.Name, string.Join(", ", configuration.GetSection(MetadataSectionName).GetChildren().Select(c => c.Key)));
         }
 
         return values;

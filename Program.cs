@@ -23,15 +23,22 @@ using System.Security.Cryptography;
 using System.Text;
 using static System.Net.Mime.MediaTypeNames;
 
+// The first argument selects the run mode. Anything other than an explicit CLI
+// command is forwarded to the host instead, so the gateway can be started with
+// regular arguments such as `--urls http://0.0.0.0:8080`. Without this, any
+// argument (including --urls) made the process run the CLI user manager, print
+// "Unknown command" and exit before the web server ever started.
+var cliArguments = CliUserManager.TryParseCommandLine(args, out var cliCommand) ? cliCommand : null;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Logging: built-in Microsoft.Extensions.Logging only (no external logging framework).
 // Levels come from the "Logging:LogLevel" configuration section.
 builder.Logging.ClearProviders();
 
-if (args.Length > 0)
+// CLI mode: plain text, single line keeps interactive prompts readable.
+if (cliArguments != null)
 {
-    // CLI mode: plain text, single line keeps interactive prompts readable.
     builder.Logging.AddSimpleConsole(options =>
     {
         options.SingleLine = true;
@@ -160,9 +167,9 @@ var pluginsPath = Path.Combine(builder.Environment.ContentRootPath, "Plugins");
 // NOTE: PluginService only needs a logger here. Plugins are instantiated with a
 // parameterless constructor (no host services are injected) and receive their
 // configuration through PluginMetadata at initialization time.
-var pluginLogger = builder.Services.BuildServiceProvider()
-    .GetService<ILoggerFactory>()?.CreateLogger<PluginService>();
-var pluginService = new PluginService(pluginsPath, pluginLogger);
+// The PluginService logger is resolved later from the real container, so no
+// temporary service provider (and no duplicated singleton graph) is needed here.
+var pluginService = new PluginService(pluginsPath, logger: null);
 builder.Services.AddSingleton<IPluginService>(pluginService);
 
 var ocelotBuilder = builder.Services.AddOcelot()
@@ -175,10 +182,10 @@ pluginService.LoadPlugins(ocelotBuilder);
 
 var app = builder.Build();
 
-// If arguments provided, run CLI mode and exit without starting web server
-if (args.Length > 0)
+// If a CLI command was provided, run it and exit without starting the web server
+if (cliArguments != null)
 {
-    await CliUserManager.RunAsync(args, app.Services, builder.Configuration);
+    await CliUserManager.RunAsync(cliArguments, app.Services, builder.Configuration);
     return;
 }
 
@@ -218,9 +225,10 @@ if (configuration.GetSection("SwaggerEndPoints").GetChildren().Any())
 await DatabaseSeeder.SeedAsync(app.Services, builder.Configuration);
 
 // Initialize plugins. Runs after the host is built and the database is ready.
-// A plugin that fails to initialize aborts startup.
+// A plugin that fails to initialize is disabled with an error in the log; the
+// gateway keeps serving so the admin panel stays reachable.
 await app.Services.GetRequiredService<IPluginService>()
-    .InitializePluginsAsync(builder.Configuration);
+    .InitializePluginsAsync(app.Configuration);
 
 app.Lifetime.ApplicationStopping.Register(() =>
 {
@@ -236,13 +244,62 @@ app.UseAuthorization();
 // Health endpoint for container orchestrators (Docker HEALTHCHECK, Kubernetes probes).
 // Deliberately minimal and anonymous: it reports liveness only, never configuration
 // details or dependency state, so it is safe to expose.
-app.MapGet("/health", () => Results.Json(new
+//
+// This is a terminal middleware rather than a mapped endpoint on purpose: UseOcelot
+// below ends the pipeline for every route it handles, and an endpoint mapped before it
+// was shadowed by Ocelot (which answered 404 for unmapped paths). A middleware is the
+// only reliable point in front of Ocelot.
+app.Use(async (context, next) =>
 {
-    status = "healthy",
-    version = AdminMiddleware.AppVersion
-})).AllowAnonymous();
+    if (!context.Request.Path.Equals("/health", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+
+    context.Response.ContentType = "application/json; charset=utf-8";
+    context.Response.Headers.CacheControl = "no-store";
+    await context.Response.WriteAsJsonAsync(new
+    {
+        status = "healthy",
+        version = AdminMiddleware.AppVersion
+    });
+});
 
 app.UseWebSockets();
+
+// Pre-flight: Ocelot refuses to start when a route references an authentication scheme
+// that was never registered, and its message ("unsupported authentication provider")
+// does not say how to fix it. Check first and name the exact route and config key.
+var configuredProviders = settings.AuthenticationProviders?
+    .Select(p => p.Key)
+    .Where(k => !string.IsNullOrWhiteSpace(k))
+    .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+var missingProviders = configuration.GetSection("Routes").GetChildren()
+    .SelectMany(route => route.GetSection("AuthenticationOptions:AuthenticationProviderKeys").GetChildren()
+        .Select(key => (Route: route["UpstreamPathTemplate"] ?? route.Key, Provider: key.Value)))
+    .Where(x => !string.IsNullOrWhiteSpace(x.Provider) && !configuredProviders.Contains(x.Provider!))
+    .GroupBy(x => x.Provider!, StringComparer.OrdinalIgnoreCase)
+    .ToList();
+
+if (missingProviders.Count > 0)
+{
+    foreach (var group in missingProviders)
+    {
+        var routes = string.Join(", ", group.Select(x => x.Route));
+        app.Logger.LogError(
+            "Route(s) {Routes} require the authentication provider '{Provider}', which is not configured. " +
+            "Add it to AppSetting:AuthenticationProviders or remove it from those routes' AuthenticationOptions.",
+            routes, group.Key);
+    }
+
+    throw new InvalidOperationException(
+        "Ocelot routes reference authentication providers that are not configured: " +
+        string.Join(", ", missingProviders.Select(g => g.Key)) +
+        ". Configure them under AppSetting:AuthenticationProviders (see appsettings.json).");
+}
+
 // Tracing Middleware
 var pipeline = new OcelotPipelineConfiguration
 {
@@ -261,6 +318,5 @@ var pipeline = new OcelotPipelineConfiguration
     }
 };
 app.UseOcelot(pipeline).Wait();
-
 
 app.Run();

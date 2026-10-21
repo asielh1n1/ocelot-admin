@@ -80,19 +80,73 @@ jobs:
             FAILED=1
           fi
 
+          # Shipped configuration must be self-consistent: every authentication provider
+          # referenced by the route file has to be registered in appsettings.json,
+          # otherwise Ocelot aborts at startup and the container never answers /health.
+          #
+          # ocelot.json is runtime state (git-ignored, generated on first run), so the
+          # versioned ocelot.sample.json is what ships and what gets validated here.
           exit $FAILED
 
-      # Boots the published binary for real. The out-of-the-box configuration must
-      # start without any environment overrides, so a regression in startup
-      # validation (e.g. an AppSetting rule rejecting the shipped defaults) fails
-      # here instead of in the Docker smoke test.
-      #
-      # Bind to an explicit port: ASPNETCORE_URLS alone is not enough, because any
-      # Kestrel:Endpoints section in the configuration wins over it.
-      - name: Verify the gateway starts with default configuration
+      - name: Verify route authentication providers are configured
+        run: |
+          python3 - <<'PY'
+          import json, sys
+
+          with open('./ocelot.sample.json', encoding='utf-8') as fh:
+              routes = json.load(fh).get('Routes', [])
+          with open('./publish-out/appsettings.json', encoding='utf-8') as fh:
+              providers = json.load(fh)['AppSetting'].get('AuthenticationProviders', [])
+
+          configured = {(p.get('Key') or '').lower() for p in providers}
+
+          # Ocelot validates both AuthenticationProviderKey and AuthenticationProviderKeys.
+          required = set()
+          for route in routes:
+              opts = route.get('AuthenticationOptions') or {}
+              for key in opts.get('AuthenticationProviderKeys') or []:
+                  if key:
+                      required.add(key)
+              single = opts.get('AuthenticationProviderKey')
+              if single:
+                  required.add(single)
+
+          missing = sorted(k for k in required if k.lower() not in configured)
+          if missing:
+              print("::error::ocelot.sample.json routes reference authentication providers that "
+                    "are not configured in appsettings.json: " + ", ".join(missing))
+              print("::error::Ocelot refuses to start in that state. Either declare the provider "
+                    "under AppSetting:AuthenticationProviders or drop it from the route.")
+              sys.exit(1)
+
+          print(f"OK: {len(required)} provider reference(s) resolve to configured providers.")
+          PY
+
+      # Boots the published binary for real: no ocelot.json is shipped, so this also proves
+      # the file is generated on first run. A minimal appsettings.json supplies the one
+      # authentication provider Ocelot needs to start.
+      - name: Verify the gateway starts and answers /health
         run: |
           set -e
           export ASPNETCORE_ENVIRONMENT=Production
+
+          if [ -f ./publish-out/ocelot.json ]; then
+            echo "::error::ocelot.json must not be published: it is local runtime state."
+            exit 1
+          fi
+
+          cat > ./publish-out/appsettings.json <<'JSON'
+          {
+            "Logging": { "LogLevel": { "Default": "Warning" } },
+            "AppSetting": {
+              "AuthenticationProviders": [
+                { "Key": "JWT", "Type": "jwt", "SecretKey": "ci-only-not-a-secret-ci-only-not-a-secret" }
+              ],
+              "AdminApi": { "SigningKey": "ci-only-not-a-secret-ci-only-not-a-secret", "Enable": true }
+            },
+            "PluginMetadata": {}
+          }
+          JSON
 
           dotnet ./publish-out/ApiGateway.dll --urls http://127.0.0.1:5080 > startup.log 2>&1 &
           PID=$!
@@ -107,6 +161,12 @@ jobs:
               echo "Health endpoint responded:"
               curl -fsS http://127.0.0.1:5080/health
               kill "$PID" 2>/dev/null || true
+
+              if [ ! -f ./publish-out/ocelot.json ]; then
+                echo "::error::ocelot.json was not generated on first run."
+                exit 1
+              fi
+              echo "OK: ocelot.json generated at startup."
               exit 0
             fi
             sleep 2

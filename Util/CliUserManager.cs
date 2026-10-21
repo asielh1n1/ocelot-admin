@@ -10,6 +10,33 @@ namespace ApiGateway.Util
 {
     public static class CliUserManager
     {
+        /// <summary>
+        /// Commands accepted by the CLI user manager.
+        /// </summary>
+        private static readonly string[] Commands = ["add", "remove", "set-password", "list"];
+
+        /// <summary>
+        /// Returns <c>true</c> when the process was started with a CLI command, i.e.
+        /// the first argument matches one of <see cref="Commands"/>.
+        /// 
+        /// Any other argument (for example <c>--urls</c>, <c>--contentRoot</c> or any
+        /// host setting) is left for the web host to consume: treating it as a command
+        /// would make the process print "Unknown command" and exit with code 1
+        /// before the server is started.
+        /// </summary>
+        public static bool TryParseCommandLine(string[] args, out string[] commandLine)
+        {
+            commandLine = [];
+            if (args.Length == 0)
+                return false;
+
+            if (!Commands.Contains(args[0], StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            commandLine = args;
+            return true;
+        }
+
         public static async Task RunAsync(string[] args, IServiceProvider services, IConfiguration configuration)
         {
             var cmd = args[0].ToLowerInvariant();
@@ -42,7 +69,8 @@ namespace ApiGateway.Util
                     break;
                 default:
                     Console.WriteLine("Unknown command. Commands: add, remove, set-password, list");
-                    break;
+                    Environment.ExitCode = 1;
+                    return;
             }
 
             // close process

@@ -31,7 +31,14 @@ namespace ApiGateway.Util
         public static void RegisterAuthenticationProviders(WebApplicationBuilder builder, AppSetting settings)
         {
             if (settings?.AuthenticationProviders == null || settings.AuthenticationProviders.Count == 0)
+            {
+                // Routes that declare an authentication provider will fail at Ocelot startup.
+                // Flag it here, where the fix (appsettings.json) is obvious.
+                Logger.LogWarning(
+                    "No authentication providers are configured (AppSetting:AuthenticationProviders is empty). " +
+                    "Any Ocelot route with AuthenticationOptions.AuthenticationProviderKey(s) will prevent the gateway from starting.");
                 return;
+            }
 
             // Build a temporary factory so certificate/JWKS problems are logged instead of
             // being lost on the console during startup.

@@ -27,6 +27,7 @@ Readme.md
 identity.db
 identity.db-*
 ocelot.json
+ocelot.sample.json
 
 # --- Secrets and runtime data: must never reach the image ---
 certs/
