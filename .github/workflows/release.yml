@@ -48,16 +48,32 @@ jobs:
         id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish self-contained
+      - name: Publish (framework-dependent, with native apphost)
         run: |
           dotnet publish ApiGateway.csproj \
             -c Release \
             -r ${{ matrix.rid }} \
-            --self-contained true \
+            --self-contained false \
             -p:Version=${{ steps.version.outputs.value }} \
+            -p:UseAppHost=true \
             -p:PublishReadyToRun=false \
-            -p:DebugType=none \
             -o ./publish
+
+      - name: Verify the native executable was produced
+        run: |
+          set -e
+          case "${{ matrix.rid }}" in
+            win-*) EXE="./publish/ApiGateway.exe" ;;
+            *)     EXE="./publish/ApiGateway" ;;
+          esac
+
+          if [ ! -f "$EXE" ]; then
+            echo "::error::Native executable '$EXE' was not produced."
+            echo "::error::Check that UseAppHost is true and DebugType is not 'none'."
+            ls -la ./publish | head -40
+            exit 1
+          fi
+          echo "OK: $EXE exists ($(stat -c%s "$EXE") bytes)"
 
       - name: Verify no secrets or databases were published
         run: |
@@ -82,10 +98,19 @@ jobs:
       - name: Package
         run: |
           set -e
-          cd publish
           ARCHIVE="ocelot-admin-${{ steps.version.outputs.value }}-${{ matrix.asset }}.zip"
+
+          # `zip` does not preserve the Unix executable bit, so mark the apphost as
+          # executable and let Info-ZIP record the permission in the central directory.
+          case "${{ matrix.rid }}" in
+            win-*) ;;
+            *) chmod +x ./publish/ApiGateway ;;
+          esac
+
+          cd publish
           zip -r "../$ARCHIVE" .
           cd ..
+
           echo "Created $ARCHIVE"
           ls -lh "$ARCHIVE"
 
@@ -177,14 +202,20 @@ jobs:
             ```
 
             ### Binaries
-            Download the archive for your platform, extract it and run:
 
-            ```bash
-            ./ApiGateway          # Linux
-            ApiGateway.exe        # Windows
-            ```
+            **Requires the ASP.NET Core Runtime 10.0** — download it from
+            <https://dotnet.microsoft.com/download/dotnet/10.0>
+            (choose *ASP.NET Core Runtime*, not the plain .NET Runtime).
 
-            The builds are self-contained: **.NET 10 is not required** on the target machine.
+            | Archive | Run |
+            |---|---|
+            | `windows-x64` | `ApiGateway.exe` |
+            | `linux-x64` / `linux-arm64` | `chmod +x ApiGateway && ./ApiGateway` |
+
+            The Linux archives do not preserve the executable bit, so the `chmod`
+            is required once after extracting.
+
+            The admin panel is served at `/admin` (default `http://localhost:4000/admin`).
 
             ### Plugin contract
             ```bash
