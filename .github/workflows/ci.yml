@@ -86,13 +86,15 @@ jobs:
       # start without any environment overrides, so a regression in startup
       # validation (e.g. an AppSetting rule rejecting the shipped defaults) fails
       # here instead of in the Docker smoke test.
+      #
+      # Bind to an explicit port: ASPNETCORE_URLS alone is not enough, because any
+      # Kestrel:Endpoints section in the configuration wins over it.
       - name: Verify the gateway starts with default configuration
         run: |
           set -e
           export ASPNETCORE_ENVIRONMENT=Production
-          export ASPNETCORE_URLS=http://127.0.0.1:8080
 
-          dotnet ./publish-out/ApiGateway.dll > startup.log 2>&1 &
+          dotnet ./publish-out/ApiGateway.dll --urls http://127.0.0.1:5080 > startup.log 2>&1 &
           PID=$!
 
           for i in $(seq 1 30); do
@@ -101,9 +103,9 @@ jobs:
               cat startup.log
               exit 1
             fi
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+            if curl -fsS http://127.0.0.1:5080/health >/dev/null 2>&1; then
               echo "Health endpoint responded:"
-              curl -fsS http://127.0.0.1:8080/health
+              curl -fsS http://127.0.0.1:5080/health
               kill "$PID" 2>/dev/null || true
               exit 0
             fi
@@ -112,6 +114,8 @@ jobs:
 
           echo "::error::The gateway did not answer /health in time."
           cat startup.log
+          echo "--- listening sockets ---"
+          (command -v ss >/dev/null && ss -ltnp) || true
           kill "$PID" 2>/dev/null || true
           exit 1
 
