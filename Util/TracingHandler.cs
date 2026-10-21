@@ -1,5 +1,4 @@
 ﻿using Azure.Core;
-using log4net;
 using Microsoft.AspNetCore.Http.Extensions;
 using Ocelot.Infrastructure.Extensions;
 using Ocelot.Middleware;
@@ -18,6 +17,7 @@ namespace ApiGateway.Util
 
         public static async void SendAsync(HttpContext context)
         {
+            var logger = context.RequestServices.GetService<ILogger<TracingHandler>>();
             string key = "TraceEndpointUrl";
             var downstreamRoute = context.Items.DownstreamRoute();
             if (downstreamRoute.HttpHandlerOptions == null || !downstreamRoute.HttpHandlerOptions.UseTracing || !downstreamRoute.MetadataOptions.Metadata.ContainsKey(key))
@@ -25,16 +25,19 @@ namespace ApiGateway.Util
                 return;
             }
 
-            downstreamRoute.MetadataOptions.Metadata.TryGetValue(key, out string url);
-            if( url.IsNotEmpty() 
+            downstreamRoute.MetadataOptions.Metadata.TryGetValue(key, out string? url);
+            if (url.IsNotEmpty()
                 && Uri.TryCreate(url, UriKind.Absolute, out var uriResult)
                 && (uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps))
             {
                 // SSRF protection: block requests to private/internal IP ranges
                 if (IsPrivateOrReservedHost(uriResult))
+                {
+                    logger?.LogWarning("Tracing skipped: target host {Host} is private or reserved", uriResult.Host);
                     return;
+                }
 
-                string bodyString = string.Empty;
+                string? bodyString = string.Empty;
                 context.Request.EnableBuffering();
                 using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
                 try
@@ -43,9 +46,10 @@ namespace ApiGateway.Util
                     if (context.Request.Body.CanSeek)
                         context.Request.Body.Position = 0;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     bodyString = null;
+                    logger?.LogWarning(ex, "Could not read request body for tracing");
                 }
 
                 // Filter out sensitive headers before sending to trace endpoint
@@ -69,9 +73,85 @@ namespace ApiGateway.Util
                     }
                     catch (Exception e)
                     {
-                        Console.WriteLine(string.Format("Error TracingHandler: {0}", e.Message));
+                        logger?.LogError(e, "Error sending trace to {TraceEndpointUrl}", url);
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// Immutable snapshot of everything the tracer needs from the request, captured
+        /// while the HttpContext is still valid so it can be safely processed on a
+        /// background task (never hold a reference to HttpContext across awaits/Task.Run).
+        /// </summary>
+        public sealed record TraceRequest(string Url, string Method, string Query, IDictionary<string, string> Header, string Body, string TraceEndpointUrl);
+
+        public static TraceRequest? CaptureRequest(HttpContext context)
+        {
+            try
+            {
+                const string key = "TraceEndpointUrl";
+                var downstreamRoute = context.Items.DownstreamRoute();
+                if (downstreamRoute?.HttpHandlerOptions == null || !downstreamRoute.HttpHandlerOptions.UseTracing)
+                    return null;
+
+                if (downstreamRoute.MetadataOptions?.Metadata == null ||
+                    !downstreamRoute.MetadataOptions.Metadata.TryGetValue(key, out string? url) ||
+                    string.IsNullOrWhiteSpace(url))
+                    return null;
+
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var uriResult) ||
+                    (uriResult.Scheme != Uri.UriSchemeHttp && uriResult.Scheme != Uri.UriSchemeHttps))
+                    return null;
+
+                if (IsPrivateOrReservedHost(uriResult))
+                    return null;
+
+                var safeHeaders = context.Request.Headers
+                    .Where(h => !SensitiveHeaders.Contains(h.Key))
+                    .ToDictionary(h => h.Key, h => h.Value.ToString());
+
+                return new TraceRequest(
+                    context.Request.GetDisplayUrl(),
+                    context.Request.Method,
+                    context.Request.QueryString.Value ?? string.Empty,
+                    safeHeaders,
+                    string.Empty, // body is not read here to avoid touching the request stream off-thread
+                    url);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public static async Task SendAsync(TraceRequest trace, ILogger? logger = null)
+        {
+            try
+            {
+                if (!Uri.TryCreate(trace.TraceEndpointUrl, UriKind.Absolute, out var uriResult) ||
+                    (uriResult.Scheme != Uri.UriSchemeHttp && uriResult.Scheme != Uri.UriSchemeHttps) ||
+                    IsPrivateOrReservedHost(uriResult))
+                {
+                    logger?.LogWarning("Tracing skipped: {TraceEndpointUrl} is invalid or points to a private/reserved host", trace.TraceEndpointUrl);
+                    return;
+                }
+
+                using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                var content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    Url = trace.Url,
+                    Method = trace.Method,
+                    Query = trace.Query,
+                    Header = trace.Header,
+                    Body = trace.Body
+                }), Encoding.UTF8, "application/json");
+
+                await httpClient.PostAsync(trace.TraceEndpointUrl, content);
+            }
+            catch (Exception e)
+            {
+                logger?.LogError(e, "Error sending trace to {TraceEndpointUrl}", trace.TraceEndpointUrl);
             }
         }
 

@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 using Ocelot.Configuration.File;
 using Ocelot.Configuration.Validator;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
 using System.Reflection;
@@ -17,26 +18,85 @@ namespace ApiGateway.Util
         private const string BaseUrl = "/admin-api";
         private const int MaxBodySize = 50 * 1024 * 1024;
 
-        private const string RegistrationServerUrl = "https://flow.qvasoft.net/webhook/api/gateway/register";
+        private static readonly System.Text.Json.JsonSerializerOptions SafeJsonOptions = new()
+        {
+            Encoder = JavaScriptEncoder.Default
+        };
 
-        private const string DefaultAppName = "QvaSoft Gateway";
+        private const string DefaultAppName = "Ocelot Admin";
         private const string DefaultPrimaryColor = "#03a9f4";
         private const string DefaultLogoUrl = "~/assets/logo.svg";
 
+        /// <summary>
+        /// Application version, taken from the &lt;Version&gt; property in ApiGateway.csproj.
+        /// Reads InformationalVersion first (which may include build metadata such as
+        /// "+&lt;commit&gt;"), falling back to the assembly version.
+        /// </summary>
+        public static readonly string AppVersion = ResolveAppVersion();
+
+        private static string ResolveAppVersion()
+        {
+            var assembly = typeof(AdminMiddleware).Assembly;
+
+            var informational = assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                .InformationalVersion;
+
+            if (!string.IsNullOrWhiteSpace(informational))
+            {
+                // Strip SourceLink build metadata ("1.0.0+abc1234") for display.
+                var plusIndex = informational.IndexOf('+');
+                return plusIndex > 0 ? informational[..plusIndex] : informational;
+            }
+
+            return assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        }
+
         private static readonly SemaphoreSlim _registerLock = new(1, 1);
+
+        // Simple per-IP sliding-window rate limiter for the login endpoint (brute-force / spray mitigation).
+        private const int LoginMaxAttemptsPerWindow = 10;
+        private static readonly TimeSpan LoginWindow = TimeSpan.FromMinutes(1);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Queue<DateTime>> _loginAttempts = new();
+
+        private static bool IsLoginRateLimited(string clientKey, out int retryAfterSeconds)
+        {
+            retryAfterSeconds = 0;
+            var now = DateTime.UtcNow;
+            var queue = _loginAttempts.GetOrAdd(clientKey, _ => new Queue<DateTime>());
+
+            lock (queue)
+            {
+                while (queue.Count > 0 && now - queue.Peek() > LoginWindow)
+                    queue.Dequeue();
+
+                if (queue.Count >= LoginMaxAttemptsPerWindow)
+                {
+                    retryAfterSeconds = (int)Math.Ceiling((LoginWindow - (now - queue.Peek())).TotalSeconds);
+                    return true;
+                }
+
+                queue.Enqueue(now);
+                return false;
+            }
+        }
 
         private readonly RequestDelegate _next;
         private readonly IOptionsMonitor<AppSetting> _settingsMonitor;
         private readonly IWebHostEnvironment _env;
         private readonly AdminTokenService _adminTokenService;
+        private readonly ILogger<AdminMiddleware> _logger;
 
-        public AdminMiddleware(RequestDelegate next, IOptionsMonitor<AppSetting> settingsMonitor, IWebHostEnvironment env, AdminTokenService adminTokenService)
+        public AdminMiddleware(RequestDelegate next, IOptionsMonitor<AppSetting> settingsMonitor, IWebHostEnvironment env, AdminTokenService adminTokenService, ILogger<AdminMiddleware> logger)
         {
             _next = next;
             _settingsMonitor = settingsMonitor;
             _env = env;
             _adminTokenService = adminTokenService;
+            _logger = logger;
         }
+
+        private string OcelotConfigPath => Path.Combine(_env.ContentRootPath, "ocelot.json");
 
         public async Task InvokeAsync(HttpContext context)
         {
@@ -57,20 +117,31 @@ namespace ApiGateway.Util
                     primaryColor = settings.AdminApi?.PrimaryColor ?? DefaultPrimaryColor;
                     logoUrl = settings.AdminApi?.LogoUrl ?? DefaultLogoUrl;
 
-                    var registrationCompleted = await IsRegistrationCompleted(context.RequestServices);
+                    bool registrationCompleted;
+                    try
+                    {
+                        registrationCompleted = await IsRegistrationCompleted(context.RequestServices);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Could not determine registration state; assuming completed");
+                        registrationCompleted = true;
+                    }
                     var html = await File.ReadAllTextAsync(filePath);
 
                     var configScript = "<script>\n" +
                         "  window.__APP_CONFIG__ = {\n" +
-                        $"    appName: {System.Text.Json.JsonSerializer.Serialize(appName)},\n" +
-                        $"    primaryColor: {System.Text.Json.JsonSerializer.Serialize(primaryColor)},\n" +
-                        $"    logoUrl: {System.Text.Json.JsonSerializer.Serialize(logoUrl)},\n" +
+                        $"    appName: {System.Text.Json.JsonSerializer.Serialize(appName, SafeJsonOptions)},\n" +
+                        $"    primaryColor: {System.Text.Json.JsonSerializer.Serialize(primaryColor, SafeJsonOptions)},\n" +
+                        $"    logoUrl: {System.Text.Json.JsonSerializer.Serialize(logoUrl, SafeJsonOptions)},\n" +
+                        $"    version: {System.Text.Json.JsonSerializer.Serialize(AppVersion, SafeJsonOptions)},\n" +
                         $"    registrationCompleted: {(registrationCompleted ? "true" : "false")}\n" +
                         "  };\n" +
                         "</script>\n";
-
                     html = html.Replace("</head>", configScript + "</head>");
                     context.Response.ContentType = "text/html; charset=utf-8";
+                    context.Response.Headers["X-Frame-Options"] = "DENY";
+                    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
                     await context.Response.WriteAsync(html);
                     return;
                 }
@@ -135,14 +206,18 @@ namespace ApiGateway.Util
             if (request.ContentLength > MaxBodySize)
                 return null;
 
-            var buffer = new byte[Convert.ToInt32(request.ContentLength)];
-            await request.Body.ReadAsync(buffer, 0, buffer.Length);
-            return Encoding.UTF8.GetString(buffer);
+            using var ms = new MemoryStream();
+            await request.Body.CopyToAsync(ms, context.RequestAborted);
+            if (ms.Length == 0)
+                return null;
+
+            return Encoding.UTF8.GetString(ms.ToArray());
         }
 
         private static async Task<bool> RejectIfBodyTooLarge(HttpContext context)
         {
-            if (context.Request.ContentLength > MaxBodySize)
+            // null ContentLength (e.g. chunked) cannot be size-validated up-front; reject to be safe.
+            if (context.Request.ContentLength is null || context.Request.ContentLength > MaxBodySize)
             {
                 context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
                 context.Response.ContentType = "application/json";
@@ -171,7 +246,20 @@ namespace ApiGateway.Util
 
             try
             {
-                if (await IsRegistrationCompleted(context.RequestServices))
+                bool alreadyCompleted;
+                try
+                {
+                    alreadyCompleted = await IsRegistrationCompleted(context.RequestServices);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogError(ex, "Could not determine registration state; rejecting registration");
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "internal_error", message = "Registration is not available right now." }));
+                    return;
+                }
+
+                if (alreadyCompleted)
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                     await context.Response.WriteAsync(JsonConvert.SerializeObject(new
@@ -256,16 +344,12 @@ namespace ApiGateway.Util
 
         private static async Task<bool> IsRegistrationCompleted(IServiceProvider services)
         {
-            try
-            {
-                using var scope = services.CreateScope();
-                var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-                return await userManager.Users.AnyAsync();
-            }
-            catch
-            {
-                return false;
-            }
+            using var scope = services.CreateScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            // UserManager.Users.AnyAsync() will throw if the database is unavailable.
+            // We deliberately do NOT swallow the exception here: a failure must NOT be
+            // interpreted as "no users yet" (which would re-open public registration).
+            return await userManager.Users.AnyAsync();
         }
 
         #endregion
@@ -277,6 +361,15 @@ namespace ApiGateway.Util
             context.Response.ContentType = "application/json";
 
             if (await RejectIfBodyTooLarge(context)) return;
+
+            var clientKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            if (IsLoginRateLimited(clientKey, out var retryAfter))
+            {
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                context.Response.Headers["Retry-After"] = retryAfter.ToString();
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "too_many_requests", message = "Too many login attempts. Please try again later." }));
+                return;
+            }
 
             var body = await ReadBodyAsync(context);
             if (body == null)
@@ -294,7 +387,7 @@ namespace ApiGateway.Util
                 var userManager = scope.ServiceProvider.GetService<UserManager<ApplicationUser>>();
                 var signInManager = scope.ServiceProvider.GetService<SignInManager<ApplicationUser>>();
 
-                if (userManager != null && signInManager != null)
+                if (userManager != null && signInManager != null && !string.IsNullOrWhiteSpace(login?.Username) && login.Password != null)
                 {
                     var identityUser = await userManager.FindByNameAsync(login.Username);
                     if (identityUser != null)
@@ -303,7 +396,7 @@ namespace ApiGateway.Util
                         if (result.Succeeded)
                         {
                             var roles = await userManager.GetRolesAsync(identityUser);
-                            var token = _adminTokenService.GenerateToken(identityUser.UserName, roles);
+                            var token = _adminTokenService.GenerateToken(identityUser.UserName ?? string.Empty, roles);
                             await context.Response.WriteAsync(JsonConvert.SerializeObject(new { access_token = token, username = identityUser.UserName }));
                             return;
                         }
@@ -335,7 +428,7 @@ namespace ApiGateway.Util
         private static async Task<bool> AuthenticateAdmin(HttpContext context)
         {
             var authResult = await context.AuthenticateAsync(AdminScheme);
-            if (authResult == null || !authResult.Succeeded || authResult.Principal == null || !authResult.Principal.Identity.IsAuthenticated)
+            if (authResult == null || !authResult.Succeeded || authResult.Principal == null || authResult.Principal.Identity?.IsAuthenticated != true)
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "unauthorized", message = "Unauthorized" }));
@@ -358,17 +451,18 @@ namespace ApiGateway.Util
 
         #region Data endpoints
 
-        private static async Task HandleGetData(HttpContext context, AppSetting settings)
+        private async Task HandleGetData(HttpContext context, AppSetting settings)
         {
-            string ocelotConfig;
+            string? ocelotConfig;
             try
             {
-                ocelotConfig = File.Exists("ocelot.json")
-                    ? await File.ReadAllTextAsync("ocelot.json")
+                ocelotConfig = File.Exists(OcelotConfigPath)
+                    ? await File.ReadAllTextAsync(OcelotConfigPath)
                     : null;
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogError(ex, "Error reading ocelot.json");
                 ocelotConfig = null;
             }
 
@@ -407,7 +501,7 @@ namespace ApiGateway.Util
             }));
         }
 
-        private static async Task HandlePostData(HttpContext context, ILogger? logger)
+        private async Task HandlePostData(HttpContext context, ILogger? logger)
         {
             context.Response.ContentType = "application/json";
 
@@ -416,15 +510,37 @@ namespace ApiGateway.Util
             var body = await ReadBodyAsync(context);
             if (body == null)
             {
-                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "success" }));
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "bad_request", message = "Request body is required." }));
                 return;
             }
 
-            var fileConfiguration = JsonConvert.DeserializeObject<FileConfiguration>(body);
+            FileConfiguration? fileConfiguration;
+            try
+            {
+                fileConfiguration = JsonConvert.DeserializeObject<FileConfiguration>(body);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Invalid JSON payload received for ocelot.json");
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", message = "Invalid JSON configuration." }));
+                return;
+            }
+
             if (fileConfiguration == null)
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", message = "Invalid JSON configuration." }));
+                return;
+            }
+
+            // Basic guard: prevent dangerous downstream schemes in gateway configuration.
+            var schemeError = ValidateDownstreamSchemes(fileConfiguration);
+            if (schemeError != null)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = schemeError }));
                 return;
             }
 
@@ -435,7 +551,7 @@ namespace ApiGateway.Util
                 try
                 {
                     var valType = validator.GetType();
-                    MethodInfo validateMethod = valType.GetMethod("ValidateAsync", new Type[] { typeof(FileConfiguration) })
+                    MethodInfo? validateMethod = valType.GetMethod("ValidateAsync", new Type[] { typeof(FileConfiguration) })
                         ?? valType.GetMethod("ValidateAsync", new Type[] { typeof(FileConfiguration), typeof(CancellationToken) });
 
                     if (validateMethod != null)
@@ -449,24 +565,32 @@ namespace ApiGateway.Util
                         {
                             await task.ConfigureAwait(false);
                             var result = task.GetType().GetProperty("Result")?.GetValue(task);
-                            var isValidProp = result?.GetType().GetProperty("IsValid");
-                            if (isValidProp != null && !(bool)isValidProp.GetValue(result))
+                            if (result == null)
                             {
-                                var errorsProp = result.GetType().GetProperty("Errors");
-                                var errorsEnumerable = errorsProp?.GetValue(result) as System.Collections.IEnumerable;
-                                var messages = new List<string>();
-                                if (errorsEnumerable != null)
+                                // No result object to inspect; treat as valid (Ocelot returned void/unknown shape).
+                            }
+                            else
+                            {
+                                var isValidProp = result.GetType().GetProperty("IsValid");
+                                var isValid = isValidProp?.GetValue(result) as bool?;
+                                if (isValid == false)
                                 {
-                                    foreach (var e in errorsEnumerable)
+                                    var errorsProp = result.GetType().GetProperty("Errors");
+                                    var errorsEnumerable = errorsProp?.GetValue(result) as System.Collections.IEnumerable;
+                                    var messages = new List<string>();
+                                    if (errorsEnumerable != null)
                                     {
-                                        var msg = e?.GetType().GetProperty("ErrorMessage")?.GetValue(e)?.ToString();
-                                        if (!string.IsNullOrEmpty(msg)) messages.Add(msg);
+                                        foreach (var e in errorsEnumerable)
+                                        {
+                                            var msg = e?.GetType().GetProperty("ErrorMessage")?.GetValue(e)?.ToString();
+                                            if (!string.IsNullOrEmpty(msg)) messages.Add(msg);
+                                        }
                                     }
-                                }
 
-                                context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                                await context.Response.WriteAsync(JsonConvert.SerializeObject(messages));
-                                return;
+                                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                                    await context.Response.WriteAsync(JsonConvert.SerializeObject(messages));
+                                    return;
+                                }
                             }
                         }
                     }
@@ -481,22 +605,91 @@ namespace ApiGateway.Util
             }
 
             var sanitizedJson = JsonConvert.SerializeObject(fileConfiguration, Formatting.Indented);
-            await File.WriteAllTextAsync("ocelot.json", sanitizedJson);
+
+            // Atomic write: write to a temp file then replace, so a crash cannot leave ocelot.json corrupted.
+            var tempPath = OcelotConfigPath + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(tempPath, sanitizedJson);
+                File.Move(tempPath, OcelotConfigPath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "Error writing ocelot.json");
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* ignore cleanup failure */ }
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "internal_error", message = "Could not persist configuration." }));
+                return;
+            }
+
             await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "success" }));
+        }
+
+        #endregion
+
+        #region Validation helpers
+
+        private static readonly HashSet<string> AllowedDownstreamSchemes =
+            new(StringComparer.OrdinalIgnoreCase) { "http", "https" };
+
+        private static string? ValidateDownstreamSchemes(FileConfiguration config)
+        {
+            static string? CheckRoute(string? scheme, string upstream)
+            {
+                if (string.IsNullOrWhiteSpace(scheme))
+                    return null;
+
+                if (!AllowedDownstreamSchemes.Contains(scheme))
+                    return $"Downstream scheme '{scheme}' is not allowed for route '{upstream}'. Only http/https are permitted.";
+
+                return null;
+            }
+
+            if (config.Routes != null)
+            {
+                foreach (var r in config.Routes)
+                {
+                    var err = CheckRoute(r.DownstreamScheme, r.UpstreamPathTemplate ?? "(unnamed)");
+                    if (err != null) return err;
+
+                    if (r.DangerousAcceptAnyServerCertificateValidator)
+                        return $"Route '{r.UpstreamPathTemplate}' disables TLS certificate validation, which is not allowed.";
+                }
+            }
+
+            if (config.Aggregates != null)
+            {
+                foreach (var a in config.Aggregates)
+                {
+                    if (a.RouteKeys == null) continue;
+                    foreach (var routeKey in a.RouteKeys)
+                    {
+                        var match = config.Routes?.FirstOrDefault(r => r.Key == routeKey);
+                        if (match == null) continue;
+                        var err = CheckRoute(match.DownstreamScheme, match.UpstreamPathTemplate ?? "(aggregate)");
+                        if (err != null) return err;
+                    }
+                }
+            }
+
+            return null;
         }
 
         #endregion
 
         #region Helpers
 
-        private class LoginRequest { public string Username { get; set; } public string Password { get; set; } }
+        private class LoginRequest
+        {
+            public string? Username { get; set; }
+            public string? Password { get; set; }
+        }
 
         private class RegisterRequest
         {
-            public string Email { get; set; }
-            public string FullName { get; set; }
-            public string ClientType { get; set; }
-            public string Password { get; set; }
+            public string? Email { get; set; }
+            public string? FullName { get; set; }
+            public string? Password { get; set; }
         }
 
         #endregion

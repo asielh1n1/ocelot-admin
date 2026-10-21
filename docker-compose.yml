@@ -1,0 +1,49 @@
+services:
+  gateway:
+    image: ghcr.io/asielh1n1/ocelot-admin:latest
+    # To build locally instead of pulling the published image, comment out
+    # `image:` above and uncomment the next line:
+    # build: .
+    container_name: ocelot-admin
+    restart: unless-stopped
+    ports:
+      - "4000:8080"
+    environment:
+      # Required for multi-instance deployments. Generate with:
+      #   openssl rand -base64 64
+      # Never commit the real value; use a .env file that is git-ignored.
+      AppSetting__AdminApi__SigningKey: ${ADMIN_SIGNING_KEY:-}
+
+      # Admin panel branding (optional).
+      AppSetting__AdminApi__AppName: ${APP_NAME:-Ocelot Admin}
+      AppSetting__AdminApi__PrimaryColor: ${PRIMARY_COLOR:-#03a9f4}
+
+      # CORS: comma-separated list of allowed origins. Empty = no cross-origin.
+      # AppSetting__AllowedCorsOrigins__0: "https://admin.example.com"
+
+      # SQLite identity database, stored in the mounted volume.
+      ConnectionStrings__DefaultConnection: "Data Source=/app/data/identity.db"
+
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+
+    volumes:
+      # Persist the SQLite identity database across container restarts.
+      - ocelot-identity:/app/data
+      # Mount plugins instead of baking them into the image.
+      - ./Plugins:/app/Plugins:ro
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ocelot-identity:

@@ -1,9 +1,18 @@
 <Project>
-  <ItemGroup>
+
+  <!--
+    These packages belong to the host application only.
+
+    ApiGateway.Contracts must stay dependency-free: it is published as a NuGet package and
+    loaded by plugin hosts, so dragging EF Core / Identity into it would pollute every
+    plugin's dependency graph and risk assembly version conflicts.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'ApiGateway.Contracts'">
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.2" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.2" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.2">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
+
 </Project>

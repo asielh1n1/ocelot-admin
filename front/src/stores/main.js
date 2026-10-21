@@ -25,10 +25,12 @@ export const MainStore = defineStore('MainStore', {
     currentPage: '/',
     isLoading: false,
     configChanged: false,
+    changeCount: 0,
     branding: {
-      appName: window.__APP_CONFIG__ ? window.__APP_CONFIG__.appName : 'QvaSoft Gateway',
+      appName: window.__APP_CONFIG__ ? window.__APP_CONFIG__.appName : 'Ocelot Admin',
       primaryColor: window.__APP_CONFIG__ ? window.__APP_CONFIG__.primaryColor : '#03a9f4',
       logoUrl: window.__APP_CONFIG__ ? window.__APP_CONFIG__.logoUrl : '~assets/logo.svg',
+      version: window.__APP_CONFIG__ ? window.__APP_CONFIG__.version : '1.0.0',
       registrationCompleted: window.__APP_CONFIG__ ? window.__APP_CONFIG__.registrationCompleted : true
     }
   }),
@@ -53,7 +55,7 @@ export const MainStore = defineStore('MainStore', {
       this.username = ''
       this.config = {}
       this.settings = {}
-      this.configChanged = false
+      this.resetChanges()
       this.changePage('/login')
     },
     async initialize() {
@@ -67,7 +69,7 @@ export const MainStore = defineStore('MainStore', {
           x.id = window.crypto.randomUUID()
           return x;
         })
-        this.configChanged = false
+        this.resetChanges()
       } finally { this.loading(false) }
     },
     changePage (path) {
@@ -126,7 +128,7 @@ export const MainStore = defineStore('MainStore', {
         })
         await apiGateway.saveConfig(config)
         this.toast('Data saved successfully', 'positive')
-        this.configChanged = false
+        this.resetChanges()
       } catch (error) {
         if(error.response.status === 400){
           const safeMessage = error.response.data.map(msg => escapeHtml(msg)).join('<br>')
@@ -136,7 +138,7 @@ export const MainStore = defineStore('MainStore', {
       } finally { this.loading(false) }
     },
     setGlobalConfig(data) {
-      this.configChanged = true
+      this.registerChange()
       this.config[OcelotKey.GlobalConfiguration] = data
     },
     setEndpoints(endpoints){
@@ -147,7 +149,7 @@ export const MainStore = defineStore('MainStore', {
       if(index == -1)
         return
       this.config[OcelotKey.Enpoints][index] = route
-      this.configChanged = true
+      this.registerChange()
       
     },
     addRoute(route) {
@@ -155,41 +157,55 @@ export const MainStore = defineStore('MainStore', {
         this.config[OcelotKey.Enpoints] = []
       route.id = window.crypto.randomUUID()
       this.config[OcelotKey.Enpoints].push(route)
-      this.configChanged = true
+      this.registerChange()
     },
     deleteRoute(routes) {
       this.config[OcelotKey.Enpoints] = this.config[OcelotKey.Enpoints].filter(x=> !routes.some(y=> y.id == x.id))
-      this.configChanged = true
+      this.registerChange()
     },
     addSwagger(swagger){
       if(!this.config[OcelotKey.Swagger])
         this.config[OcelotKey.Swagger] = []
       this.config[OcelotKey.Swagger].push(swagger)
-      this.configChanged = true
+      this.registerChange()
     },
     setSwagger(swagger){
       const index =  this.config[OcelotKey.Swagger].findIndex(x=> x.Key == swagger.Key)
       this.config[OcelotKey.Swagger][index] = swagger
-      this.configChanged = true
+      this.registerChange()
     },
     deleteSwagger(swagger){
       this.config[OcelotKey.Swagger] = this.config[OcelotKey.Swagger].filter(x=> x.Key != swagger.Key)
-      this.configChanged = true
+      this.registerChange()
     },
     addAggregates(aggregates){
       if(!this.config[OcelotKey.Aggregates])
         this.config[OcelotKey.Aggregates] = []
       this.config[OcelotKey.Aggregates].push(aggregates)
-      this.configChanged = true
+      this.registerChange()
     },
     setAggregates(aggregates){
       const index =  this.config[OcelotKey.Aggregates].findIndex(x=> x.UpstreamPathTemplate == aggregates.UpstreamPathTemplate)
       this.config[OcelotKey.Aggregates][index] = aggregates
-      this.configChanged = true
+      this.registerChange()
     },
     deleteAggregates(aggregates){
       this.config[OcelotKey.Aggregates] = this.config[OcelotKey.Aggregates].filter(x=> x.UpstreamPathTemplate != aggregates.UpstreamPathTemplate)
+      this.registerChange()
+    },
+    /**
+     * Marks the config as dirty and increments the pending-change counter.
+     * The counter gives the user a concrete idea of how much work is unsaved,
+     * instead of a boolean on/off indicator.
+     */
+    registerChange() {
       this.configChanged = true
+      this.changeCount += 1
+    },
+    /** Clears the dirty state and the counter (after a successful save/reload). */
+    resetChanges() {
+      this.configChanged = false
+      this.changeCount = 0
     },
     showHelp(title, helpKey){
       Dialog.create({

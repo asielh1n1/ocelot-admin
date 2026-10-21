@@ -300,8 +300,8 @@ Consider the following approach using the special placeholder format {header:pla
     </table>
   </div>
   `,
-  'delegating_handlers': `<p>Delegating handlers allow you to specify custom logic that can be executed during the request processing pipeline. This feature is particularly useful for scenarios where you need to implement custom authentication, logging, or other cross-cutting concerns that are not covered by the built-in features of API Gateway.</p>
-  <p>With delegating handlers, you can define a set of handlers that will be invoked at specific points during the request processing. These handlers can be used to modify the request or response, perform additional checks, or execute any custom logic that you require.</p>
+  'delegating_handlers': `<p>Plugins allow you to specify custom logic that can be executed during the request processing pipeline. This feature is particularly useful for scenarios where you need to implement custom authentication, logging, or other cross-cutting concerns that are not covered by the built-in features of API Gateway.</p>
+  <p>With plugins, you can define a set of handlers that will be invoked at specific points during the request processing. These handlers can be used to modify the request or response, perform additional checks, or execute any custom logic that you require.</p>
   <p>This feature provides flexibility in handling requests and responses, allowing you to extend the functionality of API Gateway to meet the specific needs of your application.</p>
   `,
   'tracing': `<p>Tracing allows you to enable distributed tracing for your routes, providing insights into the flow of requests through your system and helping you identify performance bottlenecks or issues in your downstream services.</p>

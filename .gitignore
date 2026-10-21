@@ -1,14 +1,36 @@
-/obj
-/bin
-/.vs
-/Plugins
-/tmp
-/certs
-/identity.db
-/identity.db-shm
-/identity.db-wal
-/ocelot.json
-/Properties
-/.vscode
-/.config
-/.gitattributes
+# --- Build output: non-anchored so every project in the repo is covered ---
+[Bb]in/
+[Oo]bj/
+
+# --- IDE and local tooling ---
+.vs/
+.vscode/
+.config/
+*.user
+
+# --- Secrets and runtime data: never commit these ---
+certs/
+*.p12
+*.pfx
+*.pem
+identity.db
+identity.db-shm
+identity.db-wal
+ocelot.json
+Plugins/
+tmp/
+Logs/
+
+# --- Packaging artifacts ---
+nupkg/
+publish/
+publish-out/
+
+# --- Frontend ---
+front/node_modules/
+front/.quasar/
+
+# --- Environment-specific overrides ---
+.env
+.env.local
+appsettings.Local.json

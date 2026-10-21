@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <!--
+    NuGet package metadata.
+    These properties are inert when the project is consumed through a ProjectReference,
+    so this single project serves both development and distribution.
+  -->
+  <PropertyGroup>
+    <PackageId>ocelot-admin-plugin</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>QvaSoft</Authors>
+    <Company>QvaSoft</Company>
+    <Description>Contract library for building plugins for Ocelot Admin. Implement IPlugin to extend the API Gateway request pipeline with your own delegating handlers.</Description>
+    <PackageTags>ocelot;ocelot-admin;gateway;plugin;api-gateway;aspnetcore</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/asielh1n1/ocelot-admin</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/asielh1n1/ocelot-admin.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <RootNamespace>ApiGateway.Contracts</RootNamespace>
+    <AssemblyName>ApiGateway.Contracts</AssemblyName>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <!--
+    IMPORTANT: this project must stay dependency-free.
+    It is loaded once by the host and must not drag in any framework or third-party
+    package, otherwise plugin assemblies would fail type-identity checks.
+  -->
+
+</Project>

@@ -20,25 +20,37 @@
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <DockerfileContext>.</DockerfileContext>
     <ApplicationIcon>logo.ico</ApplicationIcon>
-    <AssemblyTitle>QvaSoft Gateway</AssemblyTitle>
+    <AssemblyTitle>Ocelot Admin</AssemblyTitle>
+    <Version>1.0.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="logo.ico" />
   </ItemGroup>
 
+  <!--
+    ApiGateway.Contracts lives in a subfolder of this repository. Because this project
+    uses the Web SDK (which globs **/*.cs by default), its sources must be excluded here
+    to avoid compiling them twice.
+  -->
+  <ItemGroup>
+    <Compile Remove="ApiGateway.Contracts\**" />
+    <Content Remove="ApiGateway.Contracts\**" />
+    <EmbeddedResource Remove="ApiGateway.Contracts\**" />
+    <None Remove="ApiGateway.Contracts\**" />
+    <Compile Remove="samples\**" />
+    <Content Remove="samples\**" />
+    <EmbeddedResource Remove="samples\**" />
+    <None Remove="samples\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client.Core" Version="10.0.2" />
-	<PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.2">
-		<PrivateAssets>all</PrivateAssets>
-		<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-	</PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.2">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.Logging.Log4Net.AspNetCore" Version="8.0.0" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0-preview.4" />
     <PackageReference Include="MMLib.SwaggerForOcelot" Version="10.0.0" />
     <PackageReference Include="Ocelot" Version="24.1.0" />
@@ -46,18 +58,18 @@
     <PackageReference Include="Ocelot.Provider.Polly" Version="24.1.0" />
     <PackageReference Include="Ocelot.Tracing.OpenTracing" Version="24.1.0" />
     <PackageReference Include="Scrutor" Version="7.0.0" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12-pre20260709125052" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="ApiGateway.Contracts\ApiGateway.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Update="ocelot.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Update="certificate.pfx">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
 
   <ItemGroup>

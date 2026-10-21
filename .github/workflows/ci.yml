@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    name: Build and validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore ApiGateway.sln
+
+      - name: Build (Release, warnings as errors off)
+        run: dotnet build ApiGateway.sln -c Release --no-restore
+
+      # The sample plugin is the executable specification of the contract: if it
+      # stops compiling, the plugin API changed and the docs need updating.
+      - name: Build sample plugin
+        run: dotnet build samples/SamplePlugin/SamplePlugin.csproj -c Release
+
+      - name: Verify plugin isolation
+        run: |
+          set -e
+          OUT="samples/SamplePlugin/bin/Release/net10.0"
+          if ls "$OUT"/ApiGateway.Contracts.dll 2>/dev/null; then
+            echo "::error::The sample plugin shipped ApiGateway.Contracts.dll."
+            echo "::error::Add ExcludeAssets=runtime and Private=false to its reference."
+            exit 1
+          fi
+          echo "OK: contract assembly is not bundled with the plugin."
+
+      # Guards the release artifacts: a build must never contain secrets or a database.
+      - name: Verify publish output is clean
+        run: |
+          set -e
+          dotnet publish ApiGateway.csproj -c Release -o ./publish-out --no-restore
+
+          echo "Checking for sensitive files in the publish output..."
+          FAILED=0
+
+          if find ./publish-out -name "identity.db*" | grep -q .; then
+            echo "::error::Database file found in publish output"; FAILED=1
+          fi
+          if find ./publish-out \( -name "*.p12" -o -name "*.pfx" -o -name "*.pem" \) | grep -q .; then
+            echo "::error::Certificate found in publish output"; FAILED=1
+          fi
+          if find ./publish-out -name "appsettings.Development.json" | grep -q .; then
+            echo "::error::appsettings.Development.json found in publish output"; FAILED=1
+          fi
+
+          # Belt and braces: no non-empty SecretKey anywhere in the published JSON.
+          if grep -rIl --include="*.json" '"SecretKey"[[:space:]]*:[[:space:]]*"[^"]\+"' ./publish-out 2>/dev/null | grep -q .; then
+            echo "::error::A non-empty SecretKey was published. Remove it from appsettings.json."
+            grep -rIn --include="*.json" '"SecretKey"[[:space:]]*:[[:space:]]*"[^"]\+"' ./publish-out || true
+            FAILED=1
+          fi
+
+          exit $FAILED
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build only (never push) so pull requests cannot publish images.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ocelot-admin:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          set -e
+          docker run -d --name smoke -p 8080:8080 \
+            -e AppSetting__AdminApi__SigningKey="ci-test-key-not-a-secret" \
+            ocelot-admin:ci
+
+          echo "Waiting for the health endpoint..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health >/dev/null 2>&1; then
+              echo "Health endpoint responded:"
+              curl -fsS http://localhost:8080/health
+              docker rm -f smoke
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::Container did not become healthy in time"
+          docker logs smoke
+          docker rm -f smoke
+          exit 1

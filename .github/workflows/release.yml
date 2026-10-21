@@ -1,0 +1,190 @@
+name: Release
+
+# Triggered by a version tag such as v1.0.0. Produces:
+#   - self-contained binaries for Windows / Linux x64 / Linux arm64 (GitHub Release)
+#   - a multi-arch container image pushed to GitHub Container Registry
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write    # create the GitHub Release
+  packages: write    # push to ghcr.io
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Binaries: one self-contained zip per platform
+  # -------------------------------------------------------------------------
+  binaries:
+    name: Binaries (${{ matrix.rid }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            asset: windows-x64
+          - rid: linux-x64
+            asset: linux-x64
+          - rid: linux-arm64
+            asset: linux-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Resolve version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish self-contained
+        run: |
+          dotnet publish ApiGateway.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:Version=${{ steps.version.outputs.value }} \
+            -p:PublishReadyToRun=false \
+            -p:DebugType=none \
+            -o ./publish
+
+      - name: Verify no secrets or databases were published
+        run: |
+          set -e
+          FAILED=0
+          if find ./publish -name "identity.db*" | grep -q .; then
+            echo "::error::Database file found in publish output"; FAILED=1
+          fi
+          if find ./publish \( -name "*.p12" -o -name "*.pfx" -o -name "*.pem" \) | grep -q .; then
+            echo "::error::Certificate found in publish output"; FAILED=1
+          fi
+          if find ./publish -name "appsettings.Development.json" | grep -q .; then
+            echo "::error::appsettings.Development.json found in publish output"; FAILED=1
+          fi
+          if grep -rIl --include="*.json" '"SecretKey"[[:space:]]*:[[:space:]]*"[^"]\+"' ./publish 2>/dev/null | grep -q .; then
+            echo "::error::Non-empty SecretKey found in published configuration"; FAILED=1
+          fi
+          exit $FAILED
+
+      - name: Package
+        run: |
+          set -e
+          cd publish
+          ARCHIVE="ocelot-admin-${{ steps.version.outputs.value }}-${{ matrix.asset }}.zip"
+          zip -r "../$ARCHIVE" .
+          cd ..
+          echo "Created $ARCHIVE"
+          ls -lh "$ARCHIVE"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.rid }}
+          path: ocelot-admin-*.zip
+          retention-days: 1
+
+  # -------------------------------------------------------------------------
+  # Container image: multi-arch, pushed to ghcr.io
+  # -------------------------------------------------------------------------
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # -------------------------------------------------------------------------
+  # GitHub Release with all binaries attached
+  # -------------------------------------------------------------------------
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [binaries, image]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ## Ocelot Admin ${{ github.ref_name }}
+
+            ### Container image
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            docker run -p 4000:8080 \
+              -e AppSetting__AdminApi__SigningKey="<your-key>" \
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+
+            ### Binaries
+            Download the archive for your platform, extract it and run:
+
+            ```bash
+            ./ApiGateway          # Linux
+            ApiGateway.exe        # Windows
+            ```
+
+            The builds are self-contained: **.NET 10 is not required** on the target machine.
+
+            ### Plugin contract
+            ```bash
+            dotnet add package ocelot-admin-plugin --version ${{ github.ref_name }}
+            ```

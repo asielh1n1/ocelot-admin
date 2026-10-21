@@ -19,9 +19,6 @@ namespace ApiGateway.Util
         /// For production, specify your domains e.g. ["https://yourdomain.com"]
         /// </summary>
         public List<string> AllowedCorsOrigins { get; set; } = [];
-
-        // helper to get first provider
-        public AuthenticationProviderSetting DefaultAuthenticationProvider => (AuthenticationProviders != null && AuthenticationProviders.Count > 0) ? AuthenticationProviders[0] : null;
     }
 
     public class AppSettingsValidator
@@ -36,6 +33,16 @@ namespace ApiGateway.Util
             if (options.AdminApi == null)
             {
                 throw new InvalidOperationException("AdminApi configuration is required but was not found in appsettings.json");
+            }
+
+            // When explicitly configured, the admin signing key must be long enough to
+            // derive a strong HMAC-SHA256 key. A weak secret allows token forgery.
+            var signingKey = options.AdminApi.SigningKey;
+            if (!string.IsNullOrWhiteSpace(signingKey) && signingKey.Length < AdminApiSetting.MinSigningKeyLength)
+            {
+                throw new InvalidOperationException(
+                    $"AppSetting:AdminApi:SigningKey must be at least {AdminApiSetting.MinSigningKeyLength} characters long, " +
+                    "or left empty to use a random per-process key.");
             }
 
             try
@@ -68,7 +75,6 @@ namespace ApiGateway.Util
         public string SecretKey { get; set; }
         public string Issuer { get; set; }
         public string Audience { get; set; }
-        public int Expiration { get; set; } = 3600;
 
         // Certificate-based / JWKS fields (for asymmetric signing)
         // Path to a .pfx/.pem/.cer file containing the signing certificate (private key required to issue tokens)
@@ -83,16 +89,31 @@ namespace ApiGateway.Util
         // OIDC/IdentityServer fields
         public string Authority { get; set; }
         public string ClientId { get; set; }
-        public string ClientSecret { get; set; }
-        public bool EnableCaching { get; set; }
-        public int CacheDuration { get; set; }
-        public bool ServerCertificateValidation { get; set; }
         public bool ValidateLifetime { get; set; }
     }
 
     public class AdminApiSetting
     {
+        /// <summary>
+        /// Minimum accepted length for <see cref="SigningKey"/>.
+        /// </summary>
+        public const int MinSigningKeyLength = 32;
+
         public bool Enable { get; set; }
+
+        /// <summary>
+        /// Optional shared secret used to sign and validate admin panel JWTs.
+        /// 
+        /// Leave empty for a single-instance deployment: a cryptographically random
+        /// 512-bit key is generated at startup and never persisted to disk (sessions
+        /// are invalidated on restart).
+        /// 
+        /// Set this when running more than one instance behind a load balancer, so all
+        /// instances share the same signing key. Prefer injecting it through an
+        /// environment variable (e.g. AppSetting__AdminApi__SigningKey) instead of
+        /// committing it to appsettings.json.
+        /// </summary>
+        public string SigningKey { get; set; }
 
         // UI customization
         public string AppName { get; set; } = "API Gateway";

@@ -28,6 +28,23 @@ identity.db
 identity.db-*
 ocelot.json
 
+# --- Secrets and runtime data: must never reach the image ---
+certs/
+*.p12
+*.pfx
+*.pem
+Plugins/
+Logs/
+tmp/
+
+# --- Local artifacts and tooling ---
+nupkg/
+docs/
+samples/
+front/node_modules/
+front/.quasar/
+ApiGateway.http
+
 # Folders not needed in the Docker image
 web/
 api-gateway-admin/

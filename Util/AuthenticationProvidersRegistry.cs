@@ -3,6 +3,8 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.IO;
 using System.Security.Cryptography.X509Certificates;
@@ -19,10 +21,23 @@ namespace ApiGateway.Util
 
         private static readonly ConcurrentDictionary<string, (IEnumerable<SecurityKey> Keys, DateTime ExpiresAt)> JwksCache = new();
 
+        /// <summary>
+        /// Logger used during registration (startup) and inside key-resolution callbacks.
+        /// Set through <see cref="RegisterAuthenticationProviders"/>; falls back to a no-op
+        /// logger so the helpers can be called safely before logging is configured.
+        /// </summary>
+        internal static ILogger Logger { get; private set; } = NullLogger.Instance;
+
         public static void RegisterAuthenticationProviders(WebApplicationBuilder builder, AppSetting settings)
         {
             if (settings?.AuthenticationProviders == null || settings.AuthenticationProviders.Count == 0)
                 return;
+
+            // Build a temporary factory so certificate/JWKS problems are logged instead of
+            // being lost on the console during startup.
+            Logger = builder.Services.BuildServiceProvider()
+                .GetService<ILoggerFactory>()?
+                .CreateLogger("Auth.Providers") ?? NullLogger.Instance;
 
             var defaultProvider = settings.AuthenticationProviders[0];
             builder.Services.AddAuthentication(options =>
@@ -30,6 +45,10 @@ namespace ApiGateway.Util
                 options.DefaultAuthenticateScheme = defaultProvider.Key;
                 options.DefaultChallengeScheme = defaultProvider.Key;
             });
+
+            Logger.LogInformation(
+                "Registering {Count} authentication provider(s); default scheme '{DefaultScheme}'",
+                settings.AuthenticationProviders.Count, defaultProvider.Key);
 
             foreach (var p in settings.AuthenticationProviders)
             {
@@ -72,12 +91,22 @@ namespace ApiGateway.Util
                         }
                         else
                         {
-                            var signingKey = Encoding.UTF8.GetBytes(p.SecretKey ?? string.Empty);
+                            if (string.IsNullOrWhiteSpace(p.SecretKey))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Authentication provider '{p.Key}' is configured for symmetric JWT validation but no SecretKey was provided. " +
+                                    "Set it via appsettings (not committed) or the environment variable " +
+                                    $"'AppSetting__AuthenticationProviders__{settings.AuthenticationProviders.IndexOf(p)}__SecretKey'.");
+                            }
+
+                            var signingKey = Encoding.UTF8.GetBytes(p.SecretKey);
                             options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(signingKey);
                         }
 
                         options.RequireHttpsMetadata = true;
                     });
+
+                    Logger.LogInformation("Registered JWT provider '{Key}' (symmetric/certificate/JWKS)", p.Key);
                 }
                 else if (type == "oidc" || type == "oauth2")
                 {
@@ -97,6 +126,12 @@ namespace ApiGateway.Util
                         };
                         options.MapInboundClaims = false;
                     });
+
+                    Logger.LogInformation("Registered OIDC/OAuth2 provider '{Key}' (authority {Authority})", p.Key, p.Authority);
+                }
+                else
+                {
+                    Logger.LogWarning("Skipping authentication provider '{Key}': unsupported type '{Type}'", p.Key, p.Type);
                 }
             }
 
@@ -109,6 +144,8 @@ namespace ApiGateway.Util
             if (JwksCache.TryGetValue(jwksUri, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
                 return cached.Keys;
 
+            Logger.LogDebug("Fetching signing keys from JWKS endpoint {JwksUri}", jwksUri);
+
             var fetched = GetSigningKeysFromJwks(jwksUri).GetAwaiter().GetResult();
             JwksCache[jwksUri] = (fetched, DateTime.UtcNow.Add(JwksCacheDuration));
             return fetched;
@@ -119,16 +156,25 @@ namespace ApiGateway.Util
             try
             {
                 if (!File.Exists(path))
+                {
+                    Logger.LogError("Certificate file not found: {Path}. JWT validation will fail closed.", path);
                     return null;
+                }
 
                 var raw = File.ReadAllBytes(path);
                 var flags = X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.EphemeralKeySet;
-                return string.IsNullOrEmpty(password)
+                var cert = string.IsNullOrEmpty(password)
                     ? new X509Certificate2(raw, (string?)null, flags)
                     : new X509Certificate2(raw, password, flags);
+
+                Logger.LogInformation(
+                    "Loaded signing certificate {Subject} (thumbprint {Thumbprint}) from file {Path}",
+                    cert.Subject, cert.Thumbprint, path);
+                return cert;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.LogError(ex, "Failed to load certificate from file {Path}", path);
                 return null;
             }
         }
@@ -140,10 +186,20 @@ namespace ApiGateway.Util
                 using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
                 store.Open(OpenFlags.ReadOnly);
                 var certs = store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false);
-                return certs.Count > 0 ? certs[0] : null;
+                if (certs.Count == 0)
+                {
+                    Logger.LogError("Certificate with thumbprint {Thumbprint} not found in LocalMachine/My.", thumbprint);
+                    return null;
+                }
+
+                Logger.LogInformation(
+                    "Loaded signing certificate {Subject} (thumbprint {Thumbprint}) from LocalMachine/My",
+                    certs[0].Subject, certs[0].Thumbprint);
+                return certs[0];
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.LogError(ex, "Failed to load certificate from store {Thumbprint}", thumbprint);
                 return null;
             }
         }
@@ -152,13 +208,25 @@ namespace ApiGateway.Util
         {
             try
             {
-                using var http = new HttpClient();
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
                 var json = await http.GetStringAsync(jwksUri).ConfigureAwait(false);
                 var jwks = new JsonWebKeySet(json);
-                return jwks.GetSigningKeys();
+                var keys = jwks.GetSigningKeys();
+
+                if (keys.Count == 0)
+                {
+                    Logger.LogWarning("JWKS endpoint {JwksUri} returned no usable signing keys", jwksUri);
+                }
+                else
+                {
+                    Logger.LogInformation("Retrieved {Count} signing key(s) from JWKS endpoint {JwksUri}", keys.Count, jwksUri);
+                }
+
+                return keys;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.LogError(ex, "Failed to fetch JWKS from {JwksUri}", jwksUri);
                 return Array.Empty<SecurityKey>();
             }
         }
