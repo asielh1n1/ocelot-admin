@@ -28,11 +28,13 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # Restore by project rather than by solution: the .sln is for local
+      # development, and a stray local project reference must never break CI.
       - name: Restore
-        run: dotnet restore ApiGateway.sln
+        run: dotnet restore ApiGateway.csproj
 
-      - name: Build (Release, warnings as errors off)
-        run: dotnet build ApiGateway.sln -c Release --no-restore
+      - name: Build (Release)
+        run: dotnet build ApiGateway.csproj -c Release --no-restore
 
       # The sample plugin is the executable specification of the contract: if it
       # stops compiling, the plugin API changed and the docs need updating.
