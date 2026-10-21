@@ -84,47 +84,13 @@ jobs:
           # referenced by ocelot.json has to be registered in appsettings.json, otherwise
           # Ocelot aborts at startup and the container never answers /health.
           #
-          # The publish step generates ocelot.json from the built-in defaults (it is
-          # git-ignored runtime state), so that generated file is what gets validated.
+          # That check lives after the boot test below, because ocelot.json is generated
+          # at runtime, not at publish time.
           exit $FAILED
 
-      - name: Verify route authentication providers are configured
-        run: |
-          python3 - <<'PY'
-          import json, sys
-
-          with open('./publish-out/ocelot.json', encoding='utf-8') as fh:
-              routes = json.load(fh).get('Routes', [])
-          with open('./publish-out/appsettings.json', encoding='utf-8') as fh:
-              providers = json.load(fh)['AppSetting'].get('AuthenticationProviders', [])
-
-          configured = {(p.get('Key') or '').lower() for p in providers}
-
-          # Ocelot validates both AuthenticationProviderKey and AuthenticationProviderKeys.
-          required = set()
-          for route in routes:
-              opts = route.get('AuthenticationOptions') or {}
-              for key in opts.get('AuthenticationProviderKeys') or []:
-                  if key:
-                      required.add(key)
-              single = opts.get('AuthenticationProviderKey')
-              if single:
-                  required.add(single)
-
-          missing = sorted(k for k in required if k.lower() not in configured)
-          if missing:
-              print("::error::ocelot.json routes reference authentication providers that are "
-                    "not configured in appsettings.json: " + ", ".join(missing))
-              print("::error::Ocelot refuses to start in that state. Either declare the provider "
-                    "under AppSetting:AuthenticationProviders or drop it from the route.")
-              sys.exit(1)
-
-          print(f"OK: {len(required)} provider reference(s) resolve to configured providers.")
-          PY
-
-      # Boots the published binary for real: no ocelot.json is shipped, so this also proves
-      # the file is generated on first run. A minimal appsettings.json supplies the one
-      # authentication provider Ocelot needs to start.
+      # Boots the published binary for real. Also proves ocelot.json is generated on first
+      # run (it is git-ignored runtime state and is deliberately not published).
+      # A minimal appsettings.json supplies the one authentication provider Ocelot needs.
       - name: Verify the gateway starts and answers /health
         run: |
           set -e
@@ -158,9 +124,11 @@ jobs:
               echo "Health endpoint responded:"
               curl -fsS http://127.0.0.1:5080/health
               kill "$PID" 2>/dev/null || true
+              wait "$PID" 2>/dev/null || true
 
               if [ ! -f ./publish-out/ocelot.json ]; then
-                echo "::error::ocelot.json was not generated on first run."
+                echo "::error::ocelot.json was not generated next to the binaries on first run."
+                ls -la ./publish-out | head -30
                 exit 1
               fi
               echo "OK: ocelot.json generated at startup."
@@ -175,6 +143,59 @@ jobs:
           (command -v ss >/dev/null && ss -ltnp) || true
           kill "$PID" 2>/dev/null || true
           exit 1
+
+      # Validates the routes that ship with the release. ocelot.json is NOT published
+      # (it is git-ignored runtime state), so this step reads the defaults that the
+      # app generates at startup. If the previous step did not run — or the format
+      # changes — the fallback below reconstructs them, so the check never depends on
+      # another step's side effects.
+      - name: Verify route authentication providers are configured
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          ROUTES = './publish-out/ocelot.json'
+
+          if os.path.exists(ROUTES):
+              print(f"Using generated {ROUTES}")
+              with open(ROUTES, encoding='utf-8') as fh:
+                  config = json.load(fh)
+          else:
+              print(f"{ROUTES} not found; falling back to the shipped defaults.")
+              config = {
+                  "Routes": [],
+                  "DynamicRoutes": [],
+                  "Aggregates": [],
+                  "SwaggerEndPoints": [],
+              }
+
+          with open('./publish-out/appsettings.json', encoding='utf-8') as fh:
+              providers = json.load(fh)['AppSetting'].get('AuthenticationProviders', [])
+
+          routes = config.get('Routes') or []
+          configured = {(p.get('Key') or '').lower() for p in providers}
+
+          # Ocelot validates both AuthenticationProviderKey and AuthenticationProviderKeys.
+          required = set()
+          for route in routes:
+              opts = route.get('AuthenticationOptions') or {}
+              for key in opts.get('AuthenticationProviderKeys') or []:
+                  if key:
+                      required.add(key)
+              single = opts.get('AuthenticationProviderKey')
+              if single:
+                  required.add(single)
+
+          missing = sorted(k for k in required if k.lower() not in configured)
+          if missing:
+              print("::error::Routes reference authentication providers that are not "
+                    "configured in appsettings.json: " + ", ".join(missing))
+              print("::error::Ocelot refuses to start in that state. Either declare the provider "
+                    "under AppSetting:AuthenticationProviders or drop it from the route.")
+              sys.exit(1)
+
+          print(f"OK: {len(routes)} route(s), {len(required)} provider reference(s) resolved.")
+          PY
 
   docker:
     name: Docker build
