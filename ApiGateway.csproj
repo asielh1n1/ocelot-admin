@@ -72,6 +72,18 @@
     </Content>
   </ItemGroup>
 
+  <!--
+    Development overrides must never ship in a published artifact: they contain
+    local-only provider configuration and would be confusing (and potentially
+    unsafe) in production. The file stays in source control so `dotnet run`
+    works out of the box for every developer.
+  -->
+  <ItemGroup>
+    <Content Update="appsettings.Development.json">
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <Folder Include="Plugins\" />
   </ItemGroup>

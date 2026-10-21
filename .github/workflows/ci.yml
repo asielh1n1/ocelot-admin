@@ -68,7 +68,9 @@ jobs:
             echo "::error::Certificate found in publish output"; FAILED=1
           fi
           if find ./publish-out -name "appsettings.Development.json" | grep -q .; then
-            echo "::error::appsettings.Development.json found in publish output"; FAILED=1
+            echo "::error::appsettings.Development.json found in publish output."
+            echo "::error::Set <CopyToPublishDirectory>Never</CopyToPublishDirectory> for it in ApiGateway.csproj."
+            FAILED=1
           fi
 
           # Belt and braces: no non-empty SecretKey anywhere in the published JSON.
