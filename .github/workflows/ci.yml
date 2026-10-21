@@ -82,6 +82,39 @@ jobs:
 
           exit $FAILED
 
+      # Boots the published binary for real. The out-of-the-box configuration must
+      # start without any environment overrides, so a regression in startup
+      # validation (e.g. an AppSetting rule rejecting the shipped defaults) fails
+      # here instead of in the Docker smoke test.
+      - name: Verify the gateway starts with default configuration
+        run: |
+          set -e
+          export ASPNETCORE_ENVIRONMENT=Production
+          export ASPNETCORE_URLS=http://127.0.0.1:8080
+
+          dotnet ./publish-out/ApiGateway.dll > startup.log 2>&1 &
+          PID=$!
+
+          for i in $(seq 1 30); do
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "::error::The gateway exited before /health became available."
+              cat startup.log
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              echo "Health endpoint responded:"
+              curl -fsS http://127.0.0.1:8080/health
+              kill "$PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::The gateway did not answer /health in time."
+          cat startup.log
+          kill "$PID" 2>/dev/null || true
+          exit 1
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
@@ -107,8 +140,9 @@ jobs:
       - name: Smoke test the container
         run: |
           set -e
+          # The key must be at least 32 characters (AdminApiSetting.MinSigningKeyLength).
           docker run -d --name smoke -p 8080:8080 \
-            -e AppSetting__AdminApi__SigningKey="ci-test-key-not-a-secret" \
+            -e AppSetting__AdminApi__SigningKey="ci-test-signing-key-32-chars-minimum" \
             ocelot-admin:ci
 
           echo "Waiting for the health endpoint..."
