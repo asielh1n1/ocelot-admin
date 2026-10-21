@@ -51,12 +51,6 @@ namespace ApiGateway.Util
         }
 
         /// <summary>
-        /// Name of the versioned, read-only baseline that ships with the application.
-        /// It documents every top-level section Ocelot and MMLib.SwaggerForOcelot expect.
-        /// </summary>
-        public const string OcelotSampleFileName = "ocelot.sample.json";
-
-        /// <summary>
         /// Ensures ocelot.json exists and contains the required top-level keys
         /// (e.g. SwaggerEndPoints) so that libraries like MMLib.SwaggerForOcelot always
         /// find the sections they expect.
@@ -69,20 +63,11 @@ namespace ApiGateway.Util
         public static void EnsureOcelotDefaults(string contentRootPath)
         {
             var ocelotPath = Path.Combine(contentRootPath, "ocelot.json");
-            var samplePath = Path.Combine(contentRootPath, OcelotSampleFileName);
 
             try
             {
                 if (!File.Exists(ocelotPath))
                 {
-                    // Seed from the versioned baseline when available so the sections stay
-                    // in sync with the sample; otherwise fall back to the built-in defaults.
-                    if (File.Exists(samplePath))
-                    {
-                        File.Copy(samplePath, ocelotPath);
-                        return;
-                    }
-
                     var defaults = new
                     {
                         Routes = Array.Empty<object>(),

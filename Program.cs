@@ -61,12 +61,19 @@ else
 
 IConfiguration configuration = builder.Configuration;
 
+// Anchor the content root to the directory that holds the application binaries, not to
+// the caller's working directory. `dotnet /path/to/ApiGateway.dll` otherwise resolves
+// ContentRootPath to the current directory, and every runtime file (ocelot.json,
+// identity.db, Plugins/) would be created in the wrong place.
+var contentRoot = AppContext.BaseDirectory;
+builder.Environment.ContentRootPath = contentRoot;
+
 // Ensure ocelot.json has all required keys before loading configuration
-DatabaseSeeder.EnsureOcelotDefaults(builder.Environment.ContentRootPath);
+DatabaseSeeder.EnsureOcelotDefaults(contentRoot);
 
 // Load configuration files first
 builder.Configuration
-    .SetBasePath(builder.Environment.ContentRootPath)
+    .SetBasePath(contentRoot)
     .AddJsonFile("appsettings.json", true, true)
     .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", true, true)
     .AddJsonFile("ocelot.json", true, true)

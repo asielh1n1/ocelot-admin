@@ -70,14 +70,9 @@
     ocelot.json is runtime state, not source: it is git-ignored (it holds internal
     hostnames) and generated at startup when missing. Do not copy it into the build
     output, or a developer's local routes would leak into published artifacts.
-    ocelot.sample.json is the versioned baseline that ships instead.
   -->
   <ItemGroup>
     <Content Update="ocelot.json">
-      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
-      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
-    </Content>
-    <Content Update="ocelot.sample.json">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
       <CopyToPublishDirectory>Never</CopyToPublishDirectory>
     </Content>

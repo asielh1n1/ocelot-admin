@@ -81,11 +81,11 @@ jobs:
           fi
 
           # Shipped configuration must be self-consistent: every authentication provider
-          # referenced by the route file has to be registered in appsettings.json,
-          # otherwise Ocelot aborts at startup and the container never answers /health.
+          # referenced by ocelot.json has to be registered in appsettings.json, otherwise
+          # Ocelot aborts at startup and the container never answers /health.
           #
-          # ocelot.json is runtime state (git-ignored, generated on first run), so the
-          # versioned ocelot.sample.json is what ships and what gets validated here.
+          # The publish step generates ocelot.json from the built-in defaults (it is
+          # git-ignored runtime state), so that generated file is what gets validated.
           exit $FAILED
 
       - name: Verify route authentication providers are configured
@@ -93,7 +93,7 @@ jobs:
           python3 - <<'PY'
           import json, sys
 
-          with open('./ocelot.sample.json', encoding='utf-8') as fh:
+          with open('./publish-out/ocelot.json', encoding='utf-8') as fh:
               routes = json.load(fh).get('Routes', [])
           with open('./publish-out/appsettings.json', encoding='utf-8') as fh:
               providers = json.load(fh)['AppSetting'].get('AuthenticationProviders', [])
@@ -113,8 +113,8 @@ jobs:
 
           missing = sorted(k for k in required if k.lower() not in configured)
           if missing:
-              print("::error::ocelot.sample.json routes reference authentication providers that "
-                    "are not configured in appsettings.json: " + ", ".join(missing))
+              print("::error::ocelot.json routes reference authentication providers that are "
+                    "not configured in appsettings.json: " + ", ".join(missing))
               print("::error::Ocelot refuses to start in that state. Either declare the provider "
                     "under AppSetting:AuthenticationProviders or drop it from the route.")
               sys.exit(1)
@@ -130,10 +130,7 @@ jobs:
           set -e
           export ASPNETCORE_ENVIRONMENT=Production
 
-          if [ -f ./publish-out/ocelot.json ]; then
-            echo "::error::ocelot.json must not be published: it is local runtime state."
-            exit 1
-          fi
+          rm -f ./publish-out/ocelot.json
 
           cat > ./publish-out/appsettings.json <<'JSON'
           {
