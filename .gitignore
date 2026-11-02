@@ -34,3 +34,5 @@ front/.quasar/
 .env
 .env.local
 appsettings.Local.json
+
+docs/
