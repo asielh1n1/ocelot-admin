@@ -1,7 +1,9 @@
-﻿using ApiGateway.Util;
+﻿using ApiGateway.Contracts;
+using ApiGateway.Util;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -25,7 +27,7 @@ using static System.Net.Mime.MediaTypeNames;
 
 // The first argument selects the run mode. Anything other than an explicit CLI
 // command is forwarded to the host instead, so the gateway can be started with
-// regular arguments such as `--urls http://0.0.0.0:8080`. Without this, any
+// regular arguments such as `--urls http://0.0.0.0:4000`. Without this, any
 // argument (including --urls) made the process run the CLI user manager, print
 // "Unknown command" and exit before the web server ever started.
 var cliArguments = CliUserManager.TryParseCommandLine(args, out var cliCommand) ? cliCommand : null;
@@ -92,10 +94,30 @@ if (settings == null)
 }
 AppSettingsValidator.Validate(settings);
 
-// Add EF Core and Identity (SQLite)
+// Add EF Core and Identity (SQLite).
+//
+// A relative "Data Source=identity.db" is resolved by SQLite against the *process
+// working directory*, not the content root. Launching the published binary from a
+// shortcut, as a service, or from another folder therefore silently created a
+// second, empty database somewhere else: the gateway looked "stuck" on the setup
+// screen (or reported registration as already completed) while the real database
+// sat next to the binaries. Anchor relative paths to the content root so there is
+// exactly one identity.db, next to the application files.
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? "Data Source=identity.db";
+
+var sqliteConnectionString = new SqliteConnectionStringBuilder(connectionString);
+if (!string.IsNullOrWhiteSpace(sqliteConnectionString.DataSource)
+    && !Path.IsPathRooted(sqliteConnectionString.DataSource)
+    && !sqliteConnectionString.DataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase))
+{
+    sqliteConnectionString.DataSource = Path.Combine(contentRoot, sqliteConnectionString.DataSource);
+    connectionString = sqliteConnectionString.ConnectionString;
+}
+
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=identity.db");
+    options.UseSqlite(connectionString);
 });
 
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -111,7 +133,12 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
     options.Lockout.MaxFailedAccessAttempts = 3;
     options.Lockout.AllowedForNewUsers = true;
     // User
-    options.User.RequireUniqueEmail = true;
+    // The username is free-form ("admin", "ops-team", ...). Email is optional and is
+    // only used as a unique contact when supplied; it is no longer the login identifier
+    // (the old "activate your account by email" flow was removed).
+    // When RequireUniqueEmail is true, Identity rejects any user without an email with
+    // "Email '<user name>' is invalid.", so it must stay false.
+    options.User.RequireUniqueEmail = false;
 })
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
@@ -130,8 +157,10 @@ builder.Services.AddAuthentication().AddJwtBearer("AdminApiScheme", options =>
     options.MapInboundClaims = false;
 });
 
-if (!adminTokenService.UsesConfiguredKey)
+if (!adminTokenService.UsesConfiguredKey && cliArguments == null)
 {
+    // CLI mode never starts the web server, so the warning is noise there: the random
+    // key is created and discarded without any admin session being issued.
     Console.WriteLine(
         "[WARN] AppSetting:AdminApi:SigningKey is not configured. A random per-process key will be used: " +
         "admin sessions are invalidated on restart and will NOT be shared across instances. " +
@@ -278,14 +307,29 @@ app.UseWebSockets();
 // Pre-flight: Ocelot refuses to start when a route references an authentication scheme
 // that was never registered, and its message ("unsupported authentication provider")
 // does not say how to fix it. Check first and name the exact route and config key.
+//
+// Both route properties must be inspected: Ocelot accepts the single
+// "AuthenticationProviderKey" and the list "AuthenticationProviderKeys". Checking only
+// the list let routes with the singular property reach Ocelot, which then aborted the
+// whole gateway with an obscure FileValidationFailedError.
 var configuredProviders = settings.AuthenticationProviders?
     .Select(p => p.Key)
     .Where(k => !string.IsNullOrWhiteSpace(k))
     .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+var declaredProviders = string.Join(", ",
+    configuredProviders.Count > 0 ? configuredProviders : ["<none>"]);
+
 var missingProviders = configuration.GetSection("Routes").GetChildren()
-    .SelectMany(route => route.GetSection("AuthenticationOptions:AuthenticationProviderKeys").GetChildren()
-        .Select(key => (Route: route["UpstreamPathTemplate"] ?? route.Key, Provider: key.Value)))
+    .SelectMany(route =>
+    {
+        var upstream = route["UpstreamPathTemplate"] ?? route.Key;
+        var keys = route.GetSection("AuthenticationOptions:AuthenticationProviderKeys").GetChildren()
+            .Select(key => key.Value)
+            .Append(route["AuthenticationOptions:AuthenticationProviderKey"]);
+
+        return keys.Select(key => (Route: upstream, Provider: key));
+    })
     .Where(x => !string.IsNullOrWhiteSpace(x.Provider) && !configuredProviders.Contains(x.Provider!))
     .GroupBy(x => x.Provider!, StringComparer.OrdinalIgnoreCase)
     .ToList();
@@ -294,17 +338,20 @@ if (missingProviders.Count > 0)
 {
     foreach (var group in missingProviders)
     {
-        var routes = string.Join(", ", group.Select(x => x.Route));
+        var routes = string.Join(", ", group.Select(x => x.Route).Distinct());
+
         app.Logger.LogError(
             "Route(s) {Routes} require the authentication provider '{Provider}', which is not configured. " +
-            "Add it to AppSetting:AuthenticationProviders or remove it from those routes' AuthenticationOptions.",
-            routes, group.Key);
+            "Configured providers: {Configured}. Add it under AppSetting:AuthenticationProviders, " +
+            "remove it from those routes' AuthenticationOptions, or set AllowAnonymous on those routes.",
+            routes, group.Key, declaredProviders);
     }
 
     throw new InvalidOperationException(
         "Ocelot routes reference authentication providers that are not configured: " +
         string.Join(", ", missingProviders.Select(g => g.Key)) +
-        ". Configure them under AppSetting:AuthenticationProviders (see appsettings.json).");
+        $" (configured: {declaredProviders}). " +
+        "Configure them under AppSetting:AuthenticationProviders (see appsettings.json).");
 }
 
 // Tracing Middleware
@@ -321,6 +368,30 @@ var pipeline = new OcelotPipelineConfiguration
             var traceLogger = context.RequestServices.GetService<ILogger<TracingHandler>>();
             _ = Task.Run(() => TracingHandler.SendAsync(trace, traceLogger));
         }
+
+        // Route metadata for plugins.
+        //
+        // DownstreamRouteFinderMiddleware runs earlier in the Ocelot pipeline, so by this
+        // point the matched DownstreamRoute is already in HttpContext.Items. Its
+        // MetadataOptions.Metadata holds the route "Metadata" merged with
+        // "GlobalConfiguration:Metadata" (route values win), exactly what an operator
+        // expects from "metadata of this endpoint".
+        //
+        // We publish it through an AsyncLocal (RouteMetadataAccessor) instead of injecting
+        // HTTP headers: plugins read it in their SendAsync, nothing is forwarded to the
+        // downstream service, and nothing has to be cleaned up afterwards. The scope is
+        // disposed when the request finishes, so the value can never leak into another
+        // request served by the same pooled handler instance.
+        var route = context.Items.DownstreamRoute();
+        if (route is null)
+        {
+            await next.Invoke();
+            return;
+        }
+
+        using var metadataScope = RouteMetadataAccessor.Push(
+            new RouteMetadata(context.Request.Path.Value, route.MetadataOptions?.Metadata));
+
         await next.Invoke();
     }
 };

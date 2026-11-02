@@ -91,6 +91,20 @@ jobs:
           fi
           echo "OK: $EXE exists ($(stat -c%s "$EXE") bytes)"
 
+      # The admin UI is pre-built and committed under wwwroot. If it is missing the
+      # gateway still answers /health, so the release would look fine while /admin
+      # returns 404 and the published binary ships without a UI.
+      - name: Verify the admin UI is published
+        run: |
+          set -e
+          if [ ! -f ./publish/wwwroot/admin/index.html ]; then
+            echo "::error::wwwroot/admin/index.html is missing from the publish output."
+            echo "::error::Build the frontend (cd front && npm run build) and commit wwwroot/admin."
+            find ./publish -maxdepth 2 -type d | head -40
+            exit 1
+          fi
+          echo "OK: admin UI published ($(find ./publish/wwwroot -type f | wc -l) files)."
+
       - name: Verify no secrets or databases were published
         run: |
           set -e
@@ -253,7 +267,7 @@ jobs:
             ### Container image
             ```bash
             docker pull ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
-            docker run -p 4000:8080 \
+            docker run -p 4000:4000 \
               -e AppSetting__AdminApi__SigningKey="<your-key>" \
               ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
             ```

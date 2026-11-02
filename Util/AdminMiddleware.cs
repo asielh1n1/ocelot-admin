@@ -25,7 +25,10 @@ namespace ApiGateway.Util
 
         private const string DefaultAppName = "Ocelot Admin";
         private const string DefaultPrimaryColor = "#03a9f4";
-        private const string DefaultLogoUrl = "~/assets/logo.svg";
+        private const string DefaultLogoUrl = "/admin/logo.svg";
+
+        /// <summary>Path served by <see cref="InvokeAsync"/> with the bundled logo.</summary>
+        private const string DefaultLogoPath = "/admin/logo.svg";
 
         /// <summary>
         /// Application version, taken from the &lt;Version&gt; property in ApiGateway.csproj.
@@ -102,6 +105,32 @@ namespace ApiGateway.Util
         {
             var path = context.Request.Path.Value ?? string.Empty;
 
+            // Stable URL for the bundled default logo.
+            //
+            // The front is built with publicPath "/admin", so `logo.svg` from the
+            // frontend's public/ folder is published as wwwroot/admin/logo.svg. Serving
+            // it through this middleware (instead of relying on the Ocelot pipeline or
+            // on a hashed asset name) gives the default a URL that never changes between
+            // builds, so DefaultLogoUrl can be a plain absolute path.
+            if (context.Request.Method == "GET" &&
+                path.Equals(DefaultLogoPath, StringComparison.OrdinalIgnoreCase))
+            {
+                var logoPath = Path.Combine(_env.WebRootPath, "admin", "logo.svg");
+                if (!File.Exists(logoPath))
+                {
+                    // Not a 404 silently: a missing logo means the frontend build did not
+                    // copy public/logo.svg, which is worth knowing about.
+                    _logger.LogWarning("Default logo not found at {LogoPath}", logoPath);
+                    context.Response.StatusCode = StatusCodes.Status404NotFound;
+                    return;
+                }
+
+                context.Response.ContentType = "image/svg+xml";
+                context.Response.Headers.CacheControl = "public, max-age=86400";
+                await context.Response.SendFileAsync(logoPath);
+                return;
+            }
+
             if (context.Request.Method == "GET" &&
                 (path.Equals("/admin", StringComparison.OrdinalIgnoreCase) ||
                  path.Equals("/admin/", StringComparison.OrdinalIgnoreCase) ||
@@ -112,10 +141,20 @@ namespace ApiGateway.Util
                 {
                     var settings = _settingsMonitor.CurrentValue;
 
+                    // `??` is not enough here: appsettings.json ships these keys as
+                    // empty strings (not null), so the fallback never kicked in and the
+                    // front received "logoUrl": "". q-img then requested an empty URL
+                    // (the page itself) and showed nothing. Treat blank as "not set".
                     string appName, primaryColor, logoUrl;
-                    appName = settings.AdminApi?.AppName ?? DefaultAppName;
-                    primaryColor = settings.AdminApi?.PrimaryColor ?? DefaultPrimaryColor;
-                    logoUrl = settings.AdminApi?.LogoUrl ?? DefaultLogoUrl;
+                    appName = string.IsNullOrWhiteSpace(settings.AdminApi?.AppName)
+                        ? DefaultAppName
+                        : settings.AdminApi!.AppName;
+                    primaryColor = string.IsNullOrWhiteSpace(settings.AdminApi?.PrimaryColor)
+                        ? DefaultPrimaryColor
+                        : settings.AdminApi!.PrimaryColor;
+                    logoUrl = string.IsNullOrWhiteSpace(settings.AdminApi?.LogoUrl)
+                        ? DefaultLogoUrl
+                        : settings.AdminApi!.LogoUrl;
 
                     bool registrationCompleted;
                     try
@@ -281,12 +320,14 @@ namespace ApiGateway.Util
 
                 var reg = JsonConvert.DeserializeObject<RegisterRequest>(body);
 
-                if (string.IsNullOrWhiteSpace(reg?.Email))
+                if (string.IsNullOrWhiteSpace(reg?.Username))
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "Email is required." }));
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "Username is required." }));
                     return;
                 }
+                // Email is optional: it is only stored as contact information and is
+                // never used to authenticate (the old e-mail activation flow is gone).
                 if (string.IsNullOrWhiteSpace(reg.FullName))
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -304,13 +345,26 @@ namespace ApiGateway.Util
                 var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
                 var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
 
-                var user = new ApplicationUser { UserName = reg.Email, Email = reg.Email, EmailConfirmed = true };
+                var user = new ApplicationUser
+                {
+                    UserName = reg.Username,
+                    Email = string.IsNullOrWhiteSpace(reg.Email) ? null : reg.Email.Trim(),
+                    EmailConfirmed = true
+                };
 
                 var createResult = await userManager.CreateAsync(user, reg.Password);
                 if (!createResult.Succeeded)
                 {
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "error_creating_user", message = "Error creating user" }));
+                    // Surface the actual Identity message: "Passwords must have at least
+                    // one non alphanumeric character." is far more useful than a generic
+                    // "Error creating user".
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+                    {
+                        status = "error",
+                        code_error = "error_creating_user",
+                        message = string.Join(" ", createResult.Errors.Select(e => e.Description))
+                    }));
                     return;
                 }
 
@@ -687,7 +741,12 @@ namespace ApiGateway.Util
 
         private class RegisterRequest
         {
+            /// <summary>Login name, free-form ("admin", "ops-team", ...). Required.</summary>
+            public string? Username { get; set; }
+
+            /// <summary>Optional contact address. Never used to log in.</summary>
             public string? Email { get; set; }
+
             public string? FullName { get; set; }
             public string? Password { get; set; }
         }

@@ -18,7 +18,7 @@ dotnet add package ocelot-admin-plugin
 > type identity and the plugin will be skipped.
 
 ```xml
-<PackageReference Include="ocelot-admin-plugin" Version="1.0.0">
+<PackageReference Include="ocelot-admin-plugin" Version="1.1.0">
   <ExcludeAssets>runtime</ExcludeAssets>
   <Private>false</Private>
 </PackageReference>
@@ -119,6 +119,56 @@ PluginMetadata__PostgreSQL_Cache__ConnectionString="Host=pg;Database=cache;Usern
 | `GetInt(key, fallback)` | Parsed integer (invariant culture) |
 | `Has(key)` | `true` when the key has a non-empty value |
 | `Keys` | All configured keys |
+
+## Route metadata (per request)
+
+`PluginMetadata` holds startup settings for the plugin. To read the **metadata of the
+matched route** — the `Metadata` dictionary of the Ocelot route, already merged with
+`GlobalConfiguration:Metadata` (route wins) — use `RouteMetadataAccessor` inside
+`SendAsync`:
+
+```csharp
+public sealed class CachePlugin : DelegatingHandler, IPlugin
+{
+    public string Name => "Route Cache";
+    public bool IsGlobal => true;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var route = RouteMetadataAccessor.Current;
+        if (route?.GetBool("cache.enabled") == true)
+        {
+            var ttl = route.GetInt("cache.ttl", 60);
+            var region = route.GetOrDefault("region", "unknown");
+            // ... use ttl / region
+        }
+
+        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+    }
+}
+```
+
+The host publishes this value before any delegating handler runs. It is **not** written to
+HTTP headers, so nothing extra reaches the downstream service.
+
+| Member | Description |
+|---|---|
+| `UpstreamPath` | Upstream path of the current request |
+| `Values` | Read-only dictionary of the merged metadata |
+| `Count` | Number of keys (`0` when the route has no metadata) |
+| `Get(key)` | Value or `null` |
+| `GetOrDefault(key, fallback)` | Value or fallback |
+| `GetBool(key, fallback)` | Parsed boolean |
+| `GetInt(key, fallback)` | Parsed integer (invariant culture) |
+| `Has(key)` | `true` when the key has a non-empty value |
+
+Rules:
+
+- `Current` is `null` outside a gateway request; read it only inside `SendAsync`.
+- Do not mutate `Values`: Ocelot caches one metadata dictionary per route, shared by all
+  requests.
+- Do not capture `Current` in background work that outlives the request — copy the values.
 
 ## Contracts
 

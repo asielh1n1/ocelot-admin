@@ -11,17 +11,6 @@
         <q-btn flat round dense icon="update" @click="updateAll" size="md" class="q-mr-xs">
           <q-tooltip>{{ $t('update') }}</q-tooltip>
         </q-btn>
-
-        <!-- Save: same compact round icon as always. When there are unsaved changes
-             it turns white-on-primary and shows a counter badge at the top-right. -->
-        <q-btn flat round dense size="md" icon="save" :class="configChanged ? 'text-white save-btn--active' : 'text-white'" :disable="!configChanged" @click="saveAllChanges">
-          <q-badge v-if="configChanged" color="deep-orange" text-color="white" floating rounded class="save-count">
-            {{ changeCount }}
-          </q-badge>
-          <q-tooltip>
-            {{ configChanged ? $t('unsaved_changes', { count: changeCount }) : $t('no_changes') }}
-          </q-tooltip>
-        </q-btn>
       </q-toolbar>
     </q-header>
 
@@ -103,8 +92,7 @@ export default {
     user() {return mainStore.username },
     currentPage() { return mainStore.currentPage },
     changePage() { return mainStore.changePage },
-    configChanged() { return mainStore.configChanged },
-    changeCount() { return mainStore.changeCount }
+    configChanged() { return mainStore.configChanged }
   },
   methods: {
     async logout() {
@@ -112,16 +100,15 @@ export default {
       if(result)
         mainStore.logout()
     },
-    saveAllChanges() {
-      if(this.configChanged)
-        mainStore.save()
-    },
     async updateAll() {
+      // Changes are saved automatically, but a scheduled save may still be in the
+      // debounce window. Flush it first so reloading does not discard an edit.
       if(this.configChanged){
-        const result = await mainStore.confirm(this.$t('ask_about_update'))
-        if(result)
-          mainStore.initialize()
-      } else mainStore.initialize() 
+        await mainStore.save()
+        if(mainStore.configChanged)
+          return
+      }
+      mainStore.initialize()
     }
   }
 }
@@ -135,14 +122,9 @@ export default {
   opacity: 0.92;
 }
 
-/* ---- Save button (unsaved changes) ---- */
-.save-btn--active {
-  transition: none;
-}
-
-/* Compact counter pinned to the icon's top-right corner. Deep orange keeps it
-   readable over any primary color injected from the backend, and the border
-   separates it from the header background. */
+/* ---- Autosave ---- */
+/* The save button is gone: every form edit is persisted automatically and the
+   result is reported with the usual toast. Left here for later reuse. */
 .save-count {
   font-size: 0.6rem;
   font-weight: 700;

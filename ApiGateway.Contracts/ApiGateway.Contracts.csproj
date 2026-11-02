@@ -14,10 +14,10 @@
   -->
   <PropertyGroup>
     <PackageId>ocelot-admin-plugin</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Authors>QvaSoft</Authors>
     <Company>QvaSoft</Company>
-    <Description>Contract library for building plugins for Ocelot Admin. Implement IPlugin to extend the API Gateway request pipeline with your own delegating handlers.</Description>
+    <Description>Contract library for building plugins for Ocelot Admin. Implement IPlugin to extend the API Gateway request pipeline with your own delegating handlers, with access to per-route metadata at request time.</Description>
     <PackageTags>ocelot;ocelot-admin;gateway;plugin;api-gateway;aspnetcore</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/asielh1n1/ocelot-admin</PackageProjectUrl>

@@ -5,17 +5,17 @@
         <div class="row full-width">
           <div class="col-10 offset-1 col-sm-8 offset-sm-2 col-md-4 offset-md-4 col-lg-2 offset-lg-5">
             <q-form ref="form" greedy>
-              <q-img error-src="~/assets/logo.svg" :src="$store.branding.logoUrl" class="items-center" style="height: 80px; max-width: 80px;display: block;margin-left: auto;margin-right: auto;"/>
+              <q-img :src="$store.branding.logoUrl" class="items-center logo-img"/>
               <div class="text-h5 text-center q-my-md text-grey-9">{{ $t('register_title') }}</div>
               <p v-show="error" class="text-negative text-center">{{ error }}</p>
               <q-input
-                v-model="form.email"
-                type="email"
-                :label="$t('email') + ' *'"
+                v-model="form.username"
+                :label="$t('username') + ' *'"
+                autocomplete="username"
                 lazy-rules
                 :rules="[
-                  val => val && val.length > 0 || $t('required_field'),
-                  val => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val) || $t('invalid_email')
+                  val => val && val.trim().length > 0 || $t('required_field'),
+                  val => val.trim().indexOf('@') === -1 || $t('username_not_email')
                 ]"
               />
               <q-input
@@ -23,6 +23,16 @@
                 :label="$t('full_name') + ' *'"
                 lazy-rules
                 :rules="[val => val && val.length > 0 || $t('required_field')]"
+              />
+              <q-input
+                v-model="form.email"
+                type="email"
+                :label="$t('email')"
+                autocomplete="email"
+                lazy-rules
+                :rules="[
+                  val => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val) || $t('invalid_email')
+                ]"
               />
               <q-input
                 v-model="form.password"
@@ -68,6 +78,7 @@ export default defineComponent({
   data() {
     return {
       form: {
+        username: '',
         email: '',
         fullName: '',
         password: ''
@@ -85,7 +96,12 @@ export default defineComponent({
       this.error = ''
       try {
         const api = new RegisterApi()
-        const result = await api.register(this.form)
+        const result = await api.register({
+          username: this.form.username.trim(),
+          email: this.form.email.trim(),
+          fullName: this.form.fullName.trim(),
+          password: this.form.password
+        })
         mainStore.branding.registrationCompleted = true
         await mainStore.saveAuthData(result.access_token, result.username)
         mainStore.changePage('/')
@@ -93,7 +109,9 @@ export default defineComponent({
         if (error.code === 'ERR_NETWORK') {
           this.error = mainStore.translate('network_error')
         } else if (error.response && error.response.data && error.response.data.code_error) {
-          this.error = mainStore.translate(error.response.data.code_error)
+          // Prefer the server-provided detail (e.g. the Identity password policy
+          // message) and fall back to the translated code when there is none.
+          this.error = error.response.data.message || mainStore.translate(error.response.data.code_error)
         } else {
           this.error = mainStore.translate('unknown_error')
         }
@@ -104,3 +122,16 @@ export default defineComponent({
   }
 })
 </script>
+
+<style scoped>
+.logo-img {
+  display: block;
+  width: 80px;
+  height: 80px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.logo-img :deep(img) {
+  object-fit: contain;
+}
+</style>

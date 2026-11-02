@@ -39,7 +39,7 @@ production, review the following.
 |---|---|
 | `AppSetting__AdminApi__SigningKey` | Without it, a random per-process key is used: admin sessions break on restart and are not shared across instances. Use at least 32 characters, injected through the environment |
 | `AppSetting__AllowedCorsOrigins` | Leave it empty in production. Any non-empty value must list exact origins; wildcards are not supported |
-| TLS termination | The container listens on plain HTTP. Terminate TLS in a reverse proxy or ingress, and never expose port 8080 directly to the internet |
+| TLS termination | The container listens on plain HTTP. Terminate TLS in a reverse proxy or ingress, and never expose port 4000 directly to the internet |
 
 ### Never commit
 

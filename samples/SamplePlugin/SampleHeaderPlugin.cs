@@ -88,6 +88,17 @@ public sealed class SampleHeaderPlugin : DelegatingHandler, IPlugin
     {
         request.Headers.TryAddWithoutValidation(_headerName, _headerValue);
 
+        // Route metadata (route "Metadata" merged with "GlobalConfiguration:Metadata")
+        // is published by the host for every request. It never travels in headers, so
+        // reading it here cannot leak anything to the downstream service.
+        var routeMetadata = RouteMetadataAccessor.Current;
+        if (routeMetadata?.GetBool("sample.echo-metadata") == true)
+        {
+            request.Headers.TryAddWithoutValidation(
+                "X-Sample-Route",
+                routeMetadata.GetOrDefault("sample.route-name", routeMetadata.UpstreamPath));
+        }
+
         var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
         // Example of mutating the response instead of short-circuiting it.

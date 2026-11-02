@@ -42,6 +42,31 @@
     <Content Remove="samples\**" />
     <EmbeddedResource Remove="samples\**" />
     <None Remove="samples\**" />
+    <!--
+      front/ is the Quasar sources of the admin UI. Its build output is committed
+      under wwwroot/admin, so the frontend sources must never ship inside the
+      published gateway (they used to end up there because the Web SDK globs every
+      *.json file as Content).
+    -->
+    <Content Remove="front\**" />
+    <None Remove="front\**" />
+    <EmbeddedResource Remove="front\**" />
+  </ItemGroup>
+
+  <!--
+    The admin UI lives in wwwroot and is served as static files from
+    ContentRootPath/wwwroot at runtime.
+
+    Since .NET 6 the Web SDK only materialises static web assets on `publish`: a
+    plain `dotnet build -c Release` does NOT copy wwwroot into bin/<config>/<tfm>.
+    Running that build with ASPNETCORE_ENVIRONMENT=Production (or Development)
+    therefore logged "The WebRootPath was not found" and the admin panel returned
+    404. Copying the files to the build output as well keeps `dotnet build`
+    runnable on its own; `dotnet publish` continues to emit the fingerprinted
+    static web assets on top of these files.
+  -->
+  <ItemGroup>
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

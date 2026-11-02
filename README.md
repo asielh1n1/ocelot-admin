@@ -56,7 +56,7 @@ The published image is available at GitHub Container Registry:
 ```bash
 docker run -d \
   --name ocelot-admin \
-  -p 4000:8080 \
+  -p 4000:4000 \
   ghcr.io/asielh1n1/ocelot-admin:latest
 ```
 
@@ -79,7 +79,7 @@ docker compose up -d
 
 ```bash
 docker build -t ocelot-admin .
-docker run -d -p 4000:8080 ocelot-admin
+docker run -d -p 4000:4000 ocelot-admin
 ```
 
 ## Documentation

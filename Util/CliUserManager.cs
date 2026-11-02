@@ -56,7 +56,7 @@ namespace ApiGateway.Util
             switch (cmd)
             {
                 case "add":
-                    await CliAdd(userManager, roleManager);
+                    await CliAdd(userManager, roleManager, args);
                     break;
                 case "remove":
                     await CliRemove(userManager);
@@ -77,12 +77,25 @@ namespace ApiGateway.Util
             Environment.Exit(0);
         }
 
-        private static async Task CliAdd(UserManager<ApplicationUser> userManager, RoleManager<IdentityRole> roleManager)
+        private static async Task CliAdd(UserManager<ApplicationUser> userManager, RoleManager<IdentityRole> roleManager, string[] args)
         {
-            var username = Prompt("Username: ");
-            var password = PromptPassword("Password: ");
-            var email = ""; //Prompt($"Email (optional): ");
-            var role = "Administrator"; // Prompt($"Role (optional, e.g. Administrator): ");
+            // Non-interactive mode: `ApiGateway add <username> <password> [email]`.
+            // Useful for containers and automation, where stdin is not a terminal and
+            // Console.ReadKey (used for masked input) would throw.
+            var nonInteractive = args.Length >= 3;
+
+            var username = nonInteractive ? args[1].Trim() : Prompt("Username: ").Trim();
+            var password = nonInteractive ? args[2] : PromptPassword("Password: ");
+            // Email is optional: it is only contact information, never a login
+            // identifier (the e-mail activation flow no longer exists).
+            var email = args.Length >= 4 ? args[3].Trim() : (nonInteractive ? "" : Prompt("Email (optional): ").Trim());
+            var role = "Administrator";
+
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                Console.WriteLine("Username is required");
+                return;
+            }
 
             if (await userManager.FindByNameAsync(username) != null)
             {
@@ -90,19 +103,29 @@ namespace ApiGateway.Util
                 return;
             }
 
-            var user = new ApplicationUser { UserName = username, Email = string.IsNullOrWhiteSpace(email) ? null : email, EmailConfirmed = true };
+            var user = new ApplicationUser
+            {
+                UserName = username,
+                Email = string.IsNullOrWhiteSpace(email) ? null : email,
+                EmailConfirmed = true
+            };
+
             var result = await userManager.CreateAsync(user, password);
             if (!result.Succeeded)
             {
-                Console.WriteLine("Failed to create user: " + string.Join(", ", result.Errors.Select(e => e.Description)));
+                Console.WriteLine("Failed to create user:");
+                foreach (var error in result.Errors)
+                    Console.WriteLine($"  - {error.Code}: {error.Description}");
                 return;
             }
+
             if (!string.IsNullOrWhiteSpace(role))
             {
                 if (!await roleManager.RoleExistsAsync(role))
                     await roleManager.CreateAsync(new IdentityRole(role));
                 await userManager.AddToRoleAsync(user, role);
             }
+
             Console.WriteLine("User created");
         }
 

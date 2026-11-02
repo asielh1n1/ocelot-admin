@@ -76,7 +76,7 @@ namespace ApiGateway.Util
                         SwaggerEndPoints = Array.Empty<object>(),
                         GlobalConfiguration = new
                         {
-                            BaseUrl = "http://localhost:8080",
+                            BaseUrl = "http://localhost:4000",
                             RequestIdKey = "RequestId"
                         }
                     };

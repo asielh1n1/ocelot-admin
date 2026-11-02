@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -96,16 +97,31 @@ namespace ApiGateway.Util
                                 return GetCachedSigningKeys(p.JwksUri);
                             };
                         }
+                        else if (string.IsNullOrWhiteSpace(p.SecretKey))
+                        {
+                            // Fail closed instead of throwing.
+                            //
+                            // This delegate runs lazily, the first time the scheme is resolved.
+                            // Because the first provider is also registered as the default
+                            // authenticate scheme, that happens on *every* request - including
+                            // /health and /admin. Throwing here turned a configuration mistake
+                            // into a 500 for the whole gateway, so the admin panel that should be
+                            // used to fix the configuration was unreachable.
+                            //
+                            // A random key generated per process guarantees that no token can
+                            // ever validate: routes that require this provider answer 401, while
+                            // the rest of the gateway keeps serving.
+                            options.TokenValidationParameters.IssuerSigningKey =
+                                new SymmetricSecurityKey(RandomNumberGenerator.GetBytes(32));
+
+                            Logger.LogError(
+                                "Authentication provider '{Key}' is configured for symmetric JWT validation but no SecretKey was provided. " +
+                                "Tokens for this provider will be rejected with 401. Set it via user-secrets, appsettings (not committed) " +
+                                "or the environment variable 'AppSetting__AuthenticationProviders__{Index}__SecretKey'.",
+                                p.Key, settings.AuthenticationProviders.IndexOf(p));
+                        }
                         else
                         {
-                            if (string.IsNullOrWhiteSpace(p.SecretKey))
-                            {
-                                throw new InvalidOperationException(
-                                    $"Authentication provider '{p.Key}' is configured for symmetric JWT validation but no SecretKey was provided. " +
-                                    "Set it via appsettings (not committed) or the environment variable " +
-                                    $"'AppSetting__AuthenticationProviders__{settings.AuthenticationProviders.IndexOf(p)}__SecretKey'.");
-                            }
-
                             var signingKey = Encoding.UTF8.GetBytes(p.SecretKey);
                             options.TokenValidationParameters.IssuerSigningKey = new SymmetricSecurityKey(signingKey);
                         }

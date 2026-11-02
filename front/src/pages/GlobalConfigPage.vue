@@ -253,9 +253,26 @@ export default defineComponent({
   computed: {
     isUrl(){ return Validate.isUrl },
     settings(){return mainStore.settings},
-    routeKeys(){return mainStore.getEnpoints.filter(x=> x.Key).map(x=> x.Key)}
+    routeKeys(){return mainStore.getEnpoints.filter(x=> x.Key).map(x=> x.Key)},
+    saving(){return mainStore.saving}
   },
   methods: {
+    /**
+     * Applies the form to the store and persists it right away.
+     *
+     * This page is the only one without a dialog, so it keeps an explicit action.
+     * The rest of the pages autosave silently when their dialog is submitted; here
+     * the button saves immediately instead of waiting for the debounce window, and
+     * the usual "Data saved successfully" toast is the confirmation.
+     */
+    saveConfig(){
+      this.$refs.form.validate().then(async success => {
+        if(!success)
+          return
+        this.change()
+        await mainStore.save()
+      })
+    },
     loadConfig(){
       let data = JSON.parse(JSON.stringify(mainStore.getGlobalConfig))
       if(!data.AuthenticationOptions){

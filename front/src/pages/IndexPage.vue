@@ -184,7 +184,6 @@
     <div class="row justify-center q-mt-xl q-mb-lg">
       <div class="text-center">
         <q-img
-          error-src="~assets/logo.svg"
           :src="$store.branding.logoUrl"
           width="96px"
           class="brand-logo"
@@ -310,7 +309,7 @@ export default {
           hint: `${this.routeStats.withPlugin} ${this.$t('routes_with_plugin')}`,
           icon: 'extension',
           color: 'teal',
-          route: '/endpoint'
+          route: '/'
         }
       ]
     },
