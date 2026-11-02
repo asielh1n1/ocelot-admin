@@ -91,9 +91,6 @@ jobs:
           fi
           echo "OK: $EXE exists ($(stat -c%s "$EXE") bytes)"
 
-      # The admin UI is pre-built and committed under wwwroot. If it is missing the
-      # gateway still answers /health, so the release would look fine while /admin
-      # returns 404 and the published binary ships without a UI.
       - name: Verify the admin UI is published
         run: |
           set -e
@@ -260,6 +257,9 @@ jobs:
           files: artifacts/*.zip
           generate_release_notes: true
           draft: false
+          # Re-publishing the same tag (a common operation when a run must be replayed)
+          # must update the existing release instead of failing with "already_exists".
+          fail_on_unmatched_files: true
           prerelease: ${{ contains(steps.version.outputs.value, '-') }}
           body: |
             ## Ocelot Admin v${{ steps.version.outputs.value }}
@@ -289,6 +289,9 @@ jobs:
             The admin panel is served at `/admin` (default `http://localhost:4000/admin`).
 
             ### Plugin contract
+            The gateway contract is versioned independently of the gateway itself.
+            Install the latest published version of `ocelot-admin-plugin`:
+
             ```bash
-            dotnet add package ocelot-admin-plugin --version ${{ steps.version.outputs.value }}
+            dotnet add package ocelot-admin-plugin
             ```

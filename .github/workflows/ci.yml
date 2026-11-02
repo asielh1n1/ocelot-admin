@@ -98,39 +98,48 @@ jobs:
 
       # Boots the published binary for real. Also proves ocelot.json is generated on first
       # run (it is git-ignored runtime state and is deliberately not published).
-      # A minimal appsettings.json supplies the one authentication provider Ocelot needs.
+      #
+      # The test deliberately does NOT pin a port. appsettings.json ships a
+      # "Kestrel:Endpoints" block and Kestrel gives it precedence over --urls /
+      # ASPNETCORE_URLS, so hardcoding 5080 made this step hang while the gateway was
+      # actually healthy on 4000. Instead the step reads the real port from the startup
+      # log, which keeps working whatever the configured port becomes.
+      #
+      # Configuration is injected through environment variables rather than by
+      # overwriting appsettings.json: the published file is what users receive, so the
+      # smoke test must exercise it as-is.
       - name: Verify the gateway starts and answers /health
         run: |
           set -e
           export ASPNETCORE_ENVIRONMENT=Production
+          export Logging__LogLevel__Default=Warning
+          # Needed to read the "Now listening on: ..." line.
+          export Logging__LogLevel__Microsoft_Hosting_Lifetime=Information
+          export AppSetting__AuthenticationProviders__0__Key=JWT
+          export AppSetting__AuthenticationProviders__0__Type=jwt
+          export AppSetting__AuthenticationProviders__0__SecretKey="ci-only-not-a-secret-ci-only-not-a-secret"
+          export AppSetting__AdminApi__SigningKey="ci-only-not-a-secret-ci-only-not-a-secret"
+          export AppSetting__AdminApi__Enable=true
 
           rm -f ./publish-out/ocelot.json
 
-          cat > ./publish-out/appsettings.json <<'JSON'
-          {
-            "Logging": { "LogLevel": { "Default": "Warning" } },
-            "AppSetting": {
-              "AuthenticationProviders": [
-                { "Key": "JWT", "Type": "jwt", "SecretKey": "ci-only-not-a-secret-ci-only-not-a-secret" }
-              ],
-              "AdminApi": { "SigningKey": "ci-only-not-a-secret-ci-only-not-a-secret", "Enable": true }
-            },
-            "PluginMetadata": {}
-          }
-          JSON
-
-          dotnet ./publish-out/ApiGateway.dll --urls http://127.0.0.1:5080 > startup.log 2>&1 &
+          dotnet ./publish-out/ApiGateway.dll > startup.log 2>&1 &
           PID=$!
 
+          PORT=""
           for i in $(seq 1 30); do
             if ! kill -0 "$PID" 2>/dev/null; then
-              echo "::error::The gateway exited before /health became available."
+              echo "::error::The gateway exited before binding a port."
               cat startup.log
               exit 1
             fi
-            if curl -fsS http://127.0.0.1:5080/health >/dev/null 2>&1; then
-              echo "Health endpoint responded:"
-              curl -fsS http://127.0.0.1:5080/health
+
+            # "Now listening on: http://[::]:4000" (IPv6 wildcard is the common shape).
+            PORT=$(grep -oE 'Now listening on: https?://[^ ]+' startup.log | head -1 | sed -E 's|.*:([0-9]+)$|\1|' || true)
+
+            if [ -n "$PORT" ] && curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+              echo "Health endpoint responded on port $PORT:"
+              curl -fsS "http://127.0.0.1:$PORT/health"
               kill "$PID" 2>/dev/null || true
               wait "$PID" 2>/dev/null || true
 
