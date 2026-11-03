@@ -33,7 +33,19 @@ namespace ApiGateway.Util
                 }
                 catch (Exception ensureEx)
                 {
-                    logger.LogError(ensureEx, "EnsureCreated failed");
+                    // Name the file and whether its directory is writable. SQLite only says
+                    // "Error 14: unable to open database file", which hides the real cause:
+                    // a missing directory, or a directory the non-root container user does
+                    // not own (the usual Docker volume problem).
+                    var dataSource = db.Database.GetDbConnection().DataSource;
+                    var directory = Path.GetDirectoryName(dataSource);
+                    var directoryExists = !string.IsNullOrEmpty(directory) && Directory.Exists(directory);
+
+                    logger.LogError(ensureEx,
+                        "EnsureCreated failed. Database file: {DataSource}. Directory: {Directory} (exists: {DirectoryExists}). " +
+                        "SQLite error 14 means the process could not create or open that file: the directory must exist and be " +
+                        "writable by the user running the app (in containers, that is the non-root $APP_UID).",
+                        dataSource, directory, directoryExists);
                 }
 
                 var roleManager = svc.GetRequiredService<RoleManager<IdentityRole>>();

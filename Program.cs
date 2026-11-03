@@ -115,6 +115,38 @@ if (!string.IsNullOrWhiteSpace(sqliteConnectionString.DataSource)
     connectionString = sqliteConnectionString.ConnectionString;
 }
 
+// Create the database directory up front when the path points somewhere that does not
+// exist yet (typically /app/data with a volume mounted by Docker). Without this, SQLite
+// reports only "Error 14: unable to open database file", which does not say whether the
+// folder is missing or simply not writable. This turns it into a clear, actionable error
+// at startup instead of a 503 on the registration screen.
+if (!string.IsNullOrWhiteSpace(sqliteConnectionString.DataSource)
+    && sqliteConnectionString.DataSource != ":memory:")
+{
+    var databaseDirectory = Path.GetDirectoryName(Path.GetFullPath(sqliteConnectionString.DataSource));
+    if (!string.IsNullOrEmpty(databaseDirectory))
+    {
+        try
+        {
+            Directory.CreateDirectory(databaseDirectory);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Cannot create the directory for the identity database: '{databaseDirectory}'. " +
+                "The process must be able to write there. In containers, mount a volume that the " +
+                "runtime user owns (see Dockerfile: chown -R $APP_UID /app/data).", ex);
+        }
+
+        if (!Directory.Exists(databaseDirectory) ||
+            !new DirectoryInfo(databaseDirectory).Exists)
+        {
+            throw new InvalidOperationException(
+                $"The identity database directory '{databaseDirectory}' does not exist and could not be created.");
+        }
+    }
+}
+
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
     options.UseSqlite(connectionString);

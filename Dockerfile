@@ -33,10 +33,16 @@ ENV ASPNETCORE_URLS=http://+:4000 \
 
 EXPOSE 4000
 
+COPY --from=build /app/publish .
+
+# The container runs as the non-root user ($APP_UID), but COPY leaves /app owned by
+# root, so SQLite cannot create identity.db there and fails with
+# "SQLite Error 14: unable to open database file". Hand the data directory (and the
+# app directory, which ocelot.json is written to) to the runtime user.
+RUN mkdir -p /app/data && chown -R $APP_UID:$APP_UID /app /app/data
+
 # Run as the non-root user shipped with the ASP.NET images.
 USER $APP_UID
-
-COPY --from=build /app/publish .
 
 # Liveness probe: wget is available in the aspnet image, curl is not.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
