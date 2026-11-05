@@ -13,4 +13,14 @@ public sealed class PluginInfo
 
     /// <summary>Assembly version of the plugin, when available.</summary>
     public string Version { get; set; } = string.Empty;
+
+    /// <summary>
+    /// File name of the assembly inside <c>Plugins/</c>, or <see langword="null"/> when the
+    /// plugin was not loaded from a single file (dependencies come from the application
+    /// directory instead).
+    /// </summary>
+    public string? FileName { get; set; }
+
+    /// <summary>When <see langword="true"/>, the handler runs for every route.</summary>
+    public bool IsGlobal { get; set; }
 }

@@ -181,12 +181,17 @@ Rules:
 
 ## Deployment
 
-Copy the plugin DLL into the host's `Plugins/` directory:
+Upload the compiled plugin DLL from the **Plugins** page of the admin panel, or copy it
+into the host's `Plugins/` directory:
 
 ```
 Plugins/
 └── MyPlugin.dll
 ```
+
+Files uploaded from the admin panel are inspected first and rejected when the host would
+not load them. Either way, the gateway must be restarted so `InitializeAsync` runs.
+Copying the DLL by hand remains supported; both paths read the same `Plugins/` folder.
 
 Do **not** copy `ApiGateway.dll` or `ApiGateway.Contracts.dll` there. The host skips them
 with a warning to protect type identity.

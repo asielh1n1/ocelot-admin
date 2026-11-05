@@ -75,6 +75,38 @@ docker compose up -d
 > one instance, so all of them share the same key. See the
 > [wiki](https://github.com/asielh1n1/ocelot-admin/wiki) for details.
 
+### Installing plugins
+
+Plugins can be installed without copying files into the container: open **Plugins** in the
+admin panel and upload the compiled `.dll`. The file is validated before it is stored (it
+must be a `DelegatingHandler` implementing `IPlugin` with a public parameterless
+constructor), and a rejected upload never touches the plugins folder. The handler serves
+traffic right away; **restart the gateway** to run its `InitializeAsync`.
+
+For uploads to work, the plugins directory must be writable by the process. In Docker that
+means a bind mount without `:ro`:
+
+```yaml
+volumes:
+  - ./Plugins:/app/Plugins
+```
+
+Alternatively, mount a folder and copy the DLL into it from the host; those files are only
+loaded at startup. Copying DLLs by hand still works exactly as before: the plugin catalog in
+the panel reads the same folder, no database or extra step is involved.
+
+To disable plugin management entirely (`/admin-api/plugins` answers `403` for reads, uploads
+and deletions, and the menu entry disappears):
+
+```yaml
+environment:
+  AppSetting__AdminApi__AllowPluginUpload: "false"
+```
+
+`AllowPluginUpload` defaults to `true`. Keep the default only on trusted networks: uploading a
+DLL means running arbitrary code inside the gateway with its privileges (see
+[SECURITY.md](./SECURITY.md)).
+
 ### Building the image locally
 
 ```bash

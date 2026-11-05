@@ -57,7 +57,13 @@ export const MainStore = defineStore('MainStore', {
       // works in `quasar dev` (/) and in the built app (/admin/).
       logoUrl: brandingValue(injectedConfig.logoUrl, defaultLogoUrl),
       version: brandingValue(injectedConfig.version, '1.0.0'),
-      registrationCompleted: injectedConfig.registrationCompleted !== false
+      registrationCompleted: injectedConfig.registrationCompleted !== false,
+      // Mirrors AppSetting:AdminApi:AllowPluginUpload (true by default). Only the host
+      // injects __APP_CONFIG__; under `quasar dev` it is absent, and the menu is shown
+      // because the dev server always runs against a local, writable folder.
+      pluginUploadEnabled: injectedConfig.pluginUploadEnabled === undefined
+        ? import.meta.env.DEV
+        : injectedConfig.pluginUploadEnabled === true
     }
   }),
   getters: {

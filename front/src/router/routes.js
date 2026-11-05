@@ -1,3 +1,5 @@
+import { MainStore } from '../stores/main'
+
 const routes = [
   {
     path: '/',
@@ -6,6 +8,13 @@ const routes = [
     children: [
       { path: '', component: () => import('pages/IndexPage.vue') },
       { path: 'global-config', component: () => import('pages/GlobalConfigPage.vue') },
+      {
+        path: 'plugins',
+        component: () => import('pages/PluginsPage.vue'),
+        // Mirrors AppSetting:AdminApi:AllowPluginUpload; the backend answers 403 when the
+        // feature is disabled, so never open the page from a bookmark or the URL bar.
+        beforeEnter: () => MainStore().branding.pluginUploadEnabled
+      },
       { path: 'endpoint', component: () => import('pages/EndpointsPage.vue') },
       { path: 'swagger', component: () => import('pages/SwaggerPage.vue') },
       { path: 'aggregation', component: () => import('pages/AggregationPage.vue') }

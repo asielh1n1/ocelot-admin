@@ -115,6 +115,21 @@ namespace ApiGateway.Util
         /// </summary>
         public string SigningKey { get; set; }
 
+        /// <summary>
+        /// Allows uploading and deleting plugin assemblies from the admin panel.
+        /// <para>
+        /// Enabled by default, so an existing <c>appsettings.json</c> keeps the behavior
+        /// operators already know. Set it to <see langword="false"/> (typically
+        /// <c>AppSetting__AdminApi__AllowPluginUpload=false</c>) to make the plugins page
+        /// read-only and refuse every upload or deletion.
+        /// </para>
+        /// Deployments that mount an immutable image (no writable volume for <c>Plugins</c>)
+        /// should disable it: uploads would fail anyway, and an authenticated administrator
+        /// being able to drop arbitrary code into the gateway is the highest-privilege
+        /// action the panel exposes.
+        /// </summary>
+        public bool AllowPluginUpload { get; set; } = true;
+
         // UI customization
         public string AppName { get; set; } = "API Gateway";
         public string PrimaryColor { get; set; } = "#03a9f4";

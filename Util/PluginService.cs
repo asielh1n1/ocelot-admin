@@ -19,6 +19,28 @@ public interface IPluginService
     /// <summary>Plugins discovered at startup, in load order.</summary>
     IReadOnlyList<PluginInfo> GetPluginNames();
 
+    /// <summary>Directory the host loads plugin assemblies from.</summary>
+    string PluginsPath { get; }
+
+    /// <summary>
+    /// Inspects a plugin assembly that is not loaded yet, using the exact rules applied at
+    /// startup, so the admin panel can reject an upload that would never be loaded.
+    /// Returns its errors instead of throwing.
+    /// </summary>
+    /// <param name="assemblyPath">File to inspect.</param>
+    /// <param name="configuration">Host configuration, used to look for the plugin metadata section.</param>
+    /// <param name="existingNames">Plugin names already loaded; a clash is an error.</param>
+    /// <param name="replacedFileNames">
+    /// Files the operation is about to replace, so the names they declare are not treated as
+    /// a clash with themselves.
+    /// </param>
+    PluginValidationResult ValidatePluginAssembly(
+        string assemblyPath,
+        IConfiguration configuration,
+        IReadOnlyCollection<string> existingNames,
+        IReadOnlyCollection<string>? replacedFileNames = null);
+
+
     /// <summary>Discovers plugin assemblies and registers them as Ocelot delegating handlers.</summary>
     void LoadPlugins(IOcelotBuilder ocelotBuilder);
 
@@ -30,6 +52,13 @@ public interface IPluginService
 
     /// <summary>Runs <see cref="IPlugin.ShutdownAsync"/> in reverse order.</summary>
     Task ShutdownPluginsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Restarts <see cref="InitializeAsync"/> for a graceful shutdown: the handler itself is
+    /// still in the request pipeline, so it is reported as loaded, but its configuration may
+    /// come from another configuration file since the last process start.
+    /// </summary>
+    void MarkAllUninitialized();
 }
 
 public class PluginService : IPluginService
@@ -56,6 +85,10 @@ public class PluginService : IPluginService
 
     public IReadOnlyList<PluginInfo> GetPluginNames() => _plugins;
 
+    public string PluginsPath => _pluginsPath;
+
+    public void MarkAllUninitialized() => _initialized.Clear();
+
     public void LoadPlugins(IOcelotBuilder ocelotBuilder)
     {
         if (!Directory.Exists(_pluginsPath))
@@ -66,6 +99,8 @@ public class PluginService : IPluginService
 
         foreach (var assembly in LoadPluginAssemblies(_pluginsPath))
         {
+            var fileName = string.IsNullOrEmpty(assembly.Location) ? null : Path.GetFileName(assembly.Location);
+
             foreach (var type in assembly.GetTypes())
             {
                 // Legacy duck-typing support: a DelegatingHandler exposing Name/IsGlobal
@@ -87,7 +122,16 @@ public class PluginService : IPluginService
                 if (!IsPluginType(type))
                     continue;
 
-                RegisterPlugin(type, ocelotBuilder);
+                RegisterPlugin(
+                    type,
+                    inspected: new PluginInfo
+                    {
+                        Name = string.Empty,
+                        ClassName = type.Name,
+                        Version = type.Assembly.GetName().Version?.ToString() ?? string.Empty,
+                        FileName = fileName
+                    },
+                    ocelotBuilder);
             }
         }
 
@@ -157,7 +201,118 @@ public class PluginService : IPluginService
         }
     }
 
-    private void RegisterPlugin(Type type, IOcelotBuilder ocelotBuilder)
+    /// <inheritdoc />
+    public PluginValidationResult ValidatePluginAssembly(
+        string assemblyPath,
+        IConfiguration configuration,
+        IReadOnlyCollection<string> existingNames,
+        IReadOnlyCollection<string>? replacedFileNames = null)
+    {
+        var result = new PluginValidationResult();
+        Assembly assembly;
+
+        try
+        {
+            assembly = Assembly.LoadFrom(assemblyPath);
+        }
+        catch (BadImageFormatException)
+        {
+            result.Errors.Add("The file is not a managed .NET assembly.");
+            return result;
+        }
+        catch (Exception ex)
+        {
+            result.Errors.Add($"The assembly could not be loaded: {ex.GetBaseException().Message}");
+            return result;
+        }
+
+        // Names that belong to the files being replaced are removed from the clash pool: the
+        // new version of a plugin necessarily declares the same name.
+        var replaced = replacedFileNames ?? [];
+        var keptNames = _plugins
+            .Where(p => p.FileName == null || !replaced.Contains(p.FileName, StringComparer.OrdinalIgnoreCase))
+            .Select(p => p.Name)
+            .Concat(existingNames.Where(n => !_plugins.Any(p => p.Name.Equals(n, StringComparison.OrdinalIgnoreCase))));
+
+        var seenNames = new HashSet<string>(keptNames, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var type in GetLoadableTypes(assembly))
+        {
+            try
+            {
+                if (type.IsAbstract || type.IsInterface)
+                    continue;
+
+                if (typeof(DelegatingHandler).IsAssignableFrom(type) && !typeof(IPlugin).IsAssignableFrom(type))
+                {
+                    // Same legacy guard as LoadPlugins, reported to the operator instead of only logged.
+                    if (HasLegacyPluginShape(type))
+                    {
+                        result.Warnings.Add(
+                            $"{type.FullName} exposes Name/IsGlobal but does not implement {nameof(IPlugin)}; " +
+                            "it will be skipped. Recompile it against ApiGateway.Contracts.");
+                    }
+
+                    continue;
+                }
+
+                if (!IsPluginType(type))
+                    continue;
+
+                if (Activator.CreateInstance(type) is not IPlugin probe)
+                {
+                    result.Errors.Add($"{type.FullName} does not implement {nameof(IPlugin)}.");
+                    continue;
+                }
+
+                var name = string.IsNullOrWhiteSpace(probe.Name) ? type.Name : probe.Name;
+
+                if (!seenNames.Add(name))
+                {
+                    result.Errors.Add(
+                        $"A plugin named '{name}' is already loaded or declared by this assembly. " +
+                        "Plugin names must be unique: they identify the 'PluginMetadata' configuration section.");
+                    continue;
+                }
+
+                result.Plugins.Add(new PluginInfo
+                {
+                    Name = name,
+                    ClassName = type.Name,
+                    Version = type.Assembly.GetName().Version?.ToString() ?? string.Empty,
+                    FileName = replacedFileNames?.FirstOrDefault(),
+                    IsGlobal = probe.IsGlobal
+                });
+            }
+            catch (Exception ex)
+            {
+                result.Errors.Add(
+                    $"{type.FullName} could not be instantiated for inspection: {ex.GetBaseException().Message}. " +
+                    "Plugins must have a public parameterless constructor.");
+            }
+        }
+
+        if (result.Errors.Count == 0 && result.Plugins.Count == 0)
+        {
+            result.Errors.Add(
+                "The assembly does not contain any usable plugin. A plugin must be a non-abstract " +
+                $"{nameof(DelegatingHandler)} implementing {nameof(IPlugin)} with a public parameterless constructor.");
+        }
+
+        if (assembly.Location is not null && !PathEquals(assembly.Location, assemblyPath))
+        {
+            // The CLR keys loaded assemblies by name: a plugin already present under this
+            // name cannot be inspected from the upload folder in this process.
+            result.Warnings.Add(
+                $"An assembly named '{assembly.GetName().Name}' is already loaded in this process. " +
+                "This file was validated as-is, but restarting the gateway is required for the new version " +
+                "to take effect.");
+        }
+
+        return result;
+    }
+
+    private void RegisterPlugin(Type type, PluginInfo? inspected, IOcelotBuilder ocelotBuilder)
     {
         // Ocelot instantiates the handler itself; we only need its metadata here.
         IPlugin? probe;
@@ -179,24 +334,40 @@ public class PluginService : IPluginService
             return;
         }
 
-        var name = string.IsNullOrWhiteSpace(probe.Name) ? type.Name : probe.Name;
-
         ocelotBuilder.AddDelegatingHandler(type, probe.IsGlobal);
 
-        var info = new PluginInfo
-        {
-            Name = name,
-            ClassName = type.Name,
-            Version = type.Assembly.GetName().Version?.ToString() ?? string.Empty
-        };
+        var info = inspected ?? new PluginInfo();
+        if (string.IsNullOrWhiteSpace(info.Name))
+            info.Name = string.IsNullOrWhiteSpace(probe.Name) ? type.Name : probe.Name;
+        if (string.IsNullOrWhiteSpace(info.ClassName))
+            info.ClassName = type.Name;
+        if (string.IsNullOrWhiteSpace(info.Version))
+            info.Version = type.Assembly.GetName().Version?.ToString() ?? string.Empty;
+
+        info.IsGlobal = probe.IsGlobal;
 
         _plugins.Add(info);
         _registered.Add((info, type));
 
         _logger.LogInformation(
             "Loaded plugin {PluginName} ({ClassName}) v{Version}, global: {IsGlobal}",
-            name, type.Name, info.Version, probe.IsGlobal);
+            info.Name, type.Name, info.Version, probe.IsGlobal);
     }
+
+    private static Type[] GetLoadableTypes(Assembly assembly)
+    {
+        try
+        {
+            return assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            return ex.Types.Where(t => t != null).Cast<Type>().ToArray();
+        }
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private IReadOnlyDictionary<string, string?> ReadMetadata(IConfiguration configuration, PluginInfo info)
     {
@@ -283,4 +454,22 @@ public class PluginService : IPluginService
                 yield return assembly;
         }
     }
+}
+
+/// <summary>
+/// Outcome of inspecting a plugin assembly before it is copied into the
+/// <c>Plugins/</c> directory.
+/// </summary>
+public sealed class PluginValidationResult
+{
+    /// <summary>Plugins declared by the assembly, in declaration order.</summary>
+    public List<PluginInfo> Plugins { get; } = new();
+
+    /// <summary>Fatal problems: the assembly would not be loaded by the host.</summary>
+    public List<string> Errors { get; } = new();
+
+    /// <summary>Non-fatal observations, such as ignored legacy types.</summary>
+    public List<string> Warnings { get; } = new();
+
+    public bool IsValid => Errors.Count == 0;
 }

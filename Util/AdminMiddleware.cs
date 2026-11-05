@@ -174,7 +174,8 @@ namespace ApiGateway.Util
                         $"    primaryColor: {System.Text.Json.JsonSerializer.Serialize(primaryColor, SafeJsonOptions)},\n" +
                         $"    logoUrl: {System.Text.Json.JsonSerializer.Serialize(logoUrl, SafeJsonOptions)},\n" +
                         $"    version: {System.Text.Json.JsonSerializer.Serialize(AppVersion, SafeJsonOptions)},\n" +
-                        $"    registrationCompleted: {(registrationCompleted ? "true" : "false")}\n" +
+                        $"    registrationCompleted: {(registrationCompleted ? "true" : "false")},\n" +
+                        $"    pluginUploadEnabled: {(PluginUploadEnabled(settings) ? "true" : "false")}\n" +
                         "  };\n" +
                         "</script>\n";
                     html = html.Replace("</head>", configScript + "</head>");
@@ -200,6 +201,7 @@ namespace ApiGateway.Util
                 var loginPath = BaseUrl + "/login";
                 var registerPath = BaseUrl + "/register";
                 var dataPath = BaseUrl + "/data";
+                var pluginsPath = BaseUrl + "/plugins";
 
                 if (context.Request.Path.Equals(loginPath, StringComparison.OrdinalIgnoreCase) && context.Request.Method == "POST")
                 {
@@ -225,6 +227,31 @@ namespace ApiGateway.Util
                 if (context.Request.Path.Equals(dataPath, StringComparison.OrdinalIgnoreCase) && context.Request.Method == "POST")
                 {
                     await HandlePostData(context, logger);
+                    return;
+                }
+
+                if (context.Request.Path.Equals(pluginsPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    // AllowPluginUpload=false disables the whole plugin API, reads included:
+                    // the panel exposes nothing about plugins in that mode, and "write only
+                    // is forbidden" is a weaker promise than the operator configured.
+                    // Hiding the menu in the UI is not a control: the endpoint must refuse
+                    // the request on its own.
+                    if (!PluginUploadEnabled(settings))
+                    {
+                        WritePluginUploadDisabled(context);
+                        return;
+                    }
+
+                    if (context.Request.Method == "GET")
+                        await HandleGetPlugins(context, settings);
+                    else if (context.Request.Method == "POST")
+                        await HandleUploadPlugin(context, logger);
+                    else if (context.Request.Method == "DELETE")
+                        await HandleDeletePlugin(context, logger);
+                    else
+                        context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
+
                     return;
                 }
 
@@ -727,6 +754,420 @@ namespace ApiGateway.Util
             }
 
             return null;
+        }
+
+        #endregion
+
+        #region Plugins
+
+        /// <summary>
+        /// Lists the plugins on disk, their load state and the files present in the plugins
+        /// directory (configured through Docker or copied by hand).
+        /// </summary>
+        private async Task HandleGetPlugins(HttpContext context, AppSetting settings)
+        {
+            using var scope = context.RequestServices.CreateScope();
+            var pluginService = scope.ServiceProvider.GetRequiredService<IPluginService>();
+
+            var files = new List<object>();
+
+            // The absolute path is host internals (it reveals the install directory and user
+            // name) and the admin panel never displays it, so it stays out of the response.
+            var directory = pluginService.PluginsPath;
+
+            if (Directory.Exists(directory))
+            {
+                foreach (var file in Directory.GetFiles(directory, "*.dll").OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+                {
+                    var fileName = Path.GetFileName(file);
+                    var info = new FileInfo(file);
+                    var plugins = pluginService.GetPluginNames()
+                        .Where(p => string.Equals(p.FileName, fileName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    files.Add(new
+                    {
+                        fileName,
+                        sizeBytes = info.Length,
+                        lastWriteUtc = info.LastWriteTimeUtc,
+                        // False for files placed in the directory after startup: they load on
+                        // the next restart.
+                        loaded = plugins.Count > 0,
+                        // When the handler is loaded but its file is gone, the plugin was
+                        // deleted from the panel and stays active until the next restart.
+                        onDisk = true,
+                        plugins = plugins.Select(p => new
+                        {
+                            name = p.Name,
+                            className = p.ClassName,
+                            version = p.Version,
+                            isGlobal = p.IsGlobal
+                        })
+                    });
+                }
+            }
+
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+            {
+                status = "success",
+                uploadEnabled = PluginUploadEnabled(settings),
+                writable = IsPluginsDirectoryWritable(directory),
+                plugins = pluginService.GetPluginNames().Select(p => new
+                {
+                    name = p.Name,
+                    className = p.ClassName,
+                    version = p.Version,
+                    fileName = p.FileName,
+                    isGlobal = p.IsGlobal
+                }),
+                files
+            }));
+        }
+
+        /// <summary>
+        /// Uploads a plugin assembly. The file is validated in a staging folder first and only
+        /// moved into the plugins directory when the host would actually load it, so a typo
+        /// cannot break the next startup. The handler is registered immediately; the plugin
+        /// needs a restart to run <see cref="IPlugin.InitializeAsync"/>.
+        /// </summary>
+        private async Task HandleUploadPlugin(HttpContext context, ILogger? logger)
+        {
+            context.Response.ContentType = "application/json";
+
+            if (await RejectIfBodyTooLarge(context)) return;
+
+            if (context.Request.Form.Files.Count == 0)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "A plugin file (.dll) is required." }));
+                return;
+            }
+
+            using var scope = context.RequestServices.CreateScope();
+            var pluginService = scope.ServiceProvider.GetRequiredService<IPluginService>();
+
+            // Stage inside the plugins directory (same volume as the destination, so the final
+            // move is cheap). The host only enumerates *.dll at startup, and the staged copy is
+            // renamed to *.staged.dll, so it is never mistaken for a plugin — even after a crash.
+            var pluginsDirectory = pluginService.PluginsPath;
+            Directory.CreateDirectory(pluginsDirectory);
+
+            // A previous attempt may have left a staging folder behind (e.g. the process was
+            // restarted mid-upload); those files are never loaded.
+            foreach (var stale in Directory.GetDirectories(pluginsDirectory, ".upload-*"))
+            {
+                try { Directory.Delete(stale, recursive: true); }
+                catch (Exception ex) { logger?.LogDebug(ex, "Could not remove stale staging folder {Path}", stale); }
+            }
+
+            var stagingPath = Path.Combine(pluginsDirectory, $".upload-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(stagingPath);
+
+            try
+            {
+                var uploaded = context.Request.Form.Files[0];
+
+                if (!string.Equals(Path.GetExtension(uploaded.FileName), ".dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = $"'{uploaded.FileName}' is not a .dll file." }));
+                    return;
+                }
+
+                var fileName = GetSafeFileName(uploaded.FileName);
+                if (fileName == null)
+                {
+                    var isHostAssembly = new[] { "ApiGateway", "ApiGateway.Contracts" }
+                        .Contains(Path.GetFileNameWithoutExtension(uploaded.FileName), StringComparer.OrdinalIgnoreCase);
+
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+                    {
+                        status = "error",
+                        code_error = "validation_error",
+                        message = isHostAssembly
+                            ? "A plugin must never ship the host or the host contract: reference 'ocelot-admin-plugin' with Private=false and ExcludeAssets=runtime instead."
+                            : $"The file name '{uploaded.FileName}' is not allowed."
+                    }));
+                    return;
+                }
+
+                var stagedAssemblyPath = Path.Combine(stagingPath, Path.GetFileNameWithoutExtension(fileName) + ".staged.dll");
+                await using (var target = File.Create(stagedAssemblyPath))
+                {
+                    await uploaded.CopyToAsync(target);
+                }
+
+                var validation = pluginService.ValidatePluginAssembly(
+                    stagedAssemblyPath,
+                    context.RequestServices.GetRequiredService<IConfiguration>(),
+                    pluginService.GetPluginNames().Select(p => p.Name).ToList(),
+                    [fileName]);
+
+                if (!validation.IsValid)
+                {
+                    logger?.LogWarning("Rejected plugin upload {FileName}: {Errors}", fileName, string.Join(" | ", validation.Errors));
+                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                    await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+                    {
+                        status = "error",
+                        code_error = "validation_error",
+                        message = string.Join(" ", validation.Errors),
+                        errors = validation.Errors,
+                        warnings = validation.Warnings
+                    }));
+                    return;
+                }
+
+                var destination = Path.Combine(pluginsDirectory, fileName);
+                var isNewFile = !File.Exists(destination);
+                // A .dll extension would make the CLR resolve this copy as an assembly in the
+                // plugins folder, which blocks deleting it while the process runs.
+                var backup = Path.Combine(stagingPath, fileName + ".previous.bak");
+
+                if (!isNewFile)
+                    File.Move(destination, backup);
+
+                try
+                {
+                    File.Move(stagedAssemblyPath, destination);
+                }
+                catch
+                {
+                    // Put the previous version back: a failed upload must not delete a working plugin.
+                    if (File.Exists(backup))
+                        File.Move(backup, destination);
+
+                    throw;
+                }
+
+                // The host queries PluginMetadata by plugin name; create the section (empty) so
+                // the operator only has to fill in values instead of discovering the key.
+                var sectionsAdded = await EnsurePluginMetadataSectionsAsync(validation.Plugins.Select(p => p.Name));
+
+                logger?.LogInformation(
+                    "Plugin file {FileName} uploaded ({Plugins}). A restart is required to load it.",
+                    fileName, string.Join(", ", validation.Plugins.Select(p => p.Name)));
+
+                context.Response.StatusCode = StatusCodes.Status201Created;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+                {
+                    status = "success",
+                    fileName,
+                    replaced = !isNewFile,
+                    needsRestart = true,
+                    metadataSectionsAdded = sectionsAdded,
+                    plugins = validation.Plugins.Select(p => new
+                    {
+                        name = p.Name,
+                        className = p.ClassName,
+                        version = p.Version,
+                        isGlobal = p.IsGlobal
+                    }),
+                    warnings = validation.Warnings
+                }));
+            }
+            catch (Exception ex)
+            {
+                logger?.LogError(ex, "Error uploading plugin");
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "internal_error", message = "The plugin could not be stored." }));
+            }
+            finally
+            {
+                try { Directory.Delete(stagingPath, recursive: true); }
+                catch (Exception ex) { logger?.LogDebug(ex, "Could not clean staging directory {Path}", stagingPath); }
+            }
+        }
+
+        /// <summary>
+        /// Deletes a plugin file. The plugin stays registered until the next restart, because
+        /// unloading an assembly from a running process is not supported.
+        /// </summary>
+        private async Task HandleDeletePlugin(HttpContext context, ILogger? logger)
+        {
+            context.Response.ContentType = "application/json";
+
+            var fileName = context.Request.Query["fileName"].ToString();
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "Query parameter 'fileName' is required." }));
+                return;
+            }
+
+            var safeName = GetSafeFileName(fileName);
+            if (safeName == null)
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "validation_error", message = "The file name contains characters that are not allowed." }));
+                return;
+            }
+
+            using var scope = context.RequestServices.CreateScope();
+            var pluginService = scope.ServiceProvider.GetRequiredService<IPluginService>();
+            var path = Path.Combine(pluginService.PluginsPath, safeName);
+
+            if (!File.Exists(path))
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new { status = "error", code_error = "not_found", message = $"'{safeName}' does not exist in the plugins directory." }));
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(pluginService.PluginsPath);
+                File.Delete(path);
+
+                // On Windows the OS keeps the deleted entry visible (and every further
+                // delete fails with "access denied") until the process that had the image
+                // mapped closes its handle. Run ShutdownAsync now so the gateway behaves
+                // as if the plugin had been removed, and say clearly that a restart is
+                // what truly unloads the code.
+                pluginService.MarkAllUninitialized();
+            }
+            catch (Exception ex)
+            {
+                // A directory mapped read-only (Docker bind mount with ":ro") reports the
+                // same "access denied" as a locked file, so name both causes.
+                logger?.LogError(ex, "Error deleting plugin file {FileName}", safeName);
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+                {
+                    status = "error",
+                    code_error = "delete_failed",
+                    message = $"{safeName} could not be deleted. The file is loaded by the running gateway " +
+                              "or the plugins directory is read-only (check the bind mount). Stop the service, " +
+                              "delete the file, and start it again."
+                }));
+                return;
+            }
+
+            logger?.LogInformation("Plugin file {FileName} deleted from the admin panel", safeName);
+
+            await context.Response.WriteAsync(JsonConvert.SerializeObject(new
+            {
+                status = "success",
+                fileName = safeName,
+                needsRestart = true
+            }));
+        }
+
+        /// <summary>
+        /// Adds empty <c>PluginMetadata:&lt;name&gt;</c> sections to the runtime configuration
+        /// files so the new plugin shows up where its settings are expected.
+        /// Returns the names that did not have a section yet.
+        /// </summary>
+        private async Task<List<string>> EnsurePluginMetadataSectionsAsync(IEnumerable<string> pluginNames)
+        {
+            var added = new List<string>();
+            var candidates = new[] { Path.Combine(_env.ContentRootPath, "appsettings.json") }
+                .Concat(Directory.GetFiles(_env.ContentRootPath, "appsettings.*.json"))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var file in candidates)
+            {
+                try
+                {
+                    var json = await File.ReadAllTextAsync(file);
+                    var root = JsonConvert.DeserializeObject<Newtonsoft.Json.Linq.JObject>(json);
+                    if (root == null)
+                        continue;
+
+                    if (root[PluginService.MetadataSectionName] is not Newtonsoft.Json.Linq.JObject metadata)
+                    {
+                        metadata = new Newtonsoft.Json.Linq.JObject();
+                        root[PluginService.MetadataSectionName] = metadata;
+                    }
+
+                    var changed = false;
+                    foreach (var name in pluginNames)
+                    {
+                        if (metadata.Property(name) == null)
+                        {
+                            metadata[name] = new Newtonsoft.Json.Linq.JObject();
+                            added.Add(name);
+                            changed = true;
+                        }
+                    }
+
+                    if (changed)
+                        await File.WriteAllTextAsync(file, root.ToString(Formatting.Indented));
+                }
+                catch (Exception ex)
+                {
+                    // Runtime configuration is best effort: the plugin still loads without its
+                    // section, and InitializeAsync reports the missing values itself.
+                    _logger.LogWarning(ex, "Could not add the plugin metadata section to {File}", file);
+                }
+            }
+
+            return added.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static Type[] GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.Where(t => t != null).Cast<Type>().ToArray();
+            }
+        }
+
+        private static bool PluginUploadEnabled(AppSetting settings) =>
+            settings.AdminApi?.AllowPluginUpload != false;
+
+        private static void WritePluginUploadDisabled(HttpContext context)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            context.Response.ContentType = "application/json";
+            _ = context.Response.WriteAsync(JsonConvert.SerializeObject(new
+            {
+                status = "error",
+                code_error = "plugin_upload_disabled",
+                message = "Plugin management is disabled by configuration (AppSetting:AdminApi:AllowPluginUpload = false)."
+            }));
+        }
+
+        /// <summary>Rejects path traversal and wildcard characters in an uploaded file name.</summary>
+        private static string? GetSafeFileName(string? fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName))
+                return null;
+
+            // A browser sends only the file name, but curl sends the whole path ("-F file=@C:\...\x.dll").
+            var name = fileName.Trim().Replace('\\', '/');
+            name = Path.GetFileName(name);
+            if (string.IsNullOrEmpty(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                return null;
+
+            // Never let an upload overwrite the host contract or the gateway itself.
+            if (new[] { "ApiGateway", "ApiGateway.Contracts" }.Contains(Path.GetFileNameWithoutExtension(name), StringComparer.OrdinalIgnoreCase))
+                return null;
+
+            return name;
+        }
+
+        private static bool IsPluginsDirectoryWritable(string directory)
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var probe = Path.Combine(directory, $".write-probe-{Guid.NewGuid():N}");
+                using (File.Create(probe, 1, FileOptions.DeleteOnClose)) { }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         #endregion

@@ -55,6 +55,12 @@
             </q-item-section>
             <q-item-section>{{$t('global_config', 2)}}</q-item-section>
           </q-item>
+          <q-item v-if="pluginUploadEnabled" clickable v-ripple :active="currentPage == '/plugins'" @click="changePage('/plugins')" active-class="active-menu">
+            <q-item-section avatar>
+              <q-icon name="extension" />
+            </q-item-section>
+            <q-item-section>{{$t('plugins')}}</q-item-section>
+          </q-item>
           <q-item clickable v-ripple @click="logout('/')">
             <q-item-section avatar>
               <q-icon name="logout" />
@@ -92,7 +98,8 @@ export default {
     user() {return mainStore.username },
     currentPage() { return mainStore.currentPage },
     changePage() { return mainStore.changePage },
-    configChanged() { return mainStore.configChanged }
+    configChanged() { return mainStore.configChanged },
+    pluginUploadEnabled() { return mainStore.branding.pluginUploadEnabled }
   },
   methods: {
     async logout() {

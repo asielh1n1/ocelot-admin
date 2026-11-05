@@ -52,6 +52,27 @@ The following are git-ignored and must stay out of the repository:
 
 The CI pipeline fails the build if a release artifact contains any of these.
 
+### Plugin upload (admin panel)
+
+`AppSetting:AdminApi:AllowPluginUpload` (default `true`) lets an authenticated
+administrator upload and delete plugin assemblies from the Plugins page.
+
+- **Any administrator can execute code in the gateway process.** A plugin is a managed
+  assembly loaded with `Assembly.LoadFrom` and no isolation, so it runs with the gateway's
+  identity, filesystem access and network reach. Treat the administrative role as
+  equivalent to shell access on the host, and disable the feature
+  (`AppSetting__AdminApi__AllowPluginUpload=false`) when it is not needed. In that mode the
+  whole `/admin-api/plugins` endpoint is rejected with `403`, so a stolen admin token cannot
+  reach it either.
+- Uploads are validated before being stored (managed assembly, implements `IPlugin`,
+  unique names, host assemblies refused, file name sanitized) and written through a
+  staging folder, so an invalid or truncated file never replaces a working plugin. This
+  protects availability, **not** integrity: validation cannot detect a malicious plugin.
+- The feature is only reachable with a valid admin token and requires a writable plugins
+  directory; with an immutable image or a read-only mount every upload is refused.
+- Files copied into the plugins directory by other means keep working. They are loaded at
+  startup; the panel only lists them.
+
 ### Known limitations
 
 - **Plain HTTP by default.** TLS is expected to be handled by an upstream proxy.
