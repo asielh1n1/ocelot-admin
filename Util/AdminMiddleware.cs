@@ -9,6 +9,8 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Identity;
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
+using NetTools;
+using System.Net;
 
 namespace ApiGateway.Util
 {
@@ -26,9 +28,6 @@ namespace ApiGateway.Util
         private const string DefaultAppName = "Ocelot Admin";
         private const string DefaultPrimaryColor = "#03a9f4";
         private const string DefaultLogoUrl = "/admin/logo.svg";
-
-        /// <summary>Path served by <see cref="InvokeAsync"/> with the bundled logo.</summary>
-        private const string DefaultLogoPath = "/admin/logo.svg";
 
         /// <summary>
         /// Application version, taken from the &lt;Version&gt; property in ApiGateway.csproj.
@@ -112,8 +111,7 @@ namespace ApiGateway.Util
             // it through this middleware (instead of relying on the Ocelot pipeline or
             // on a hashed asset name) gives the default a URL that never changes between
             // builds, so DefaultLogoUrl can be a plain absolute path.
-            if (context.Request.Method == "GET" &&
-                path.Equals(DefaultLogoPath, StringComparison.OrdinalIgnoreCase))
+            if (context.Request.Method == "GET" && path.Equals(DefaultLogoUrl, StringComparison.OrdinalIgnoreCase))
             {
                 var logoPath = Path.Combine(_env.WebRootPath, "admin", "logo.svg");
                 if (!File.Exists(logoPath))
@@ -146,15 +144,9 @@ namespace ApiGateway.Util
                     // front received "logoUrl": "". q-img then requested an empty URL
                     // (the page itself) and showed nothing. Treat blank as "not set".
                     string appName, primaryColor, logoUrl;
-                    appName = string.IsNullOrWhiteSpace(settings.AdminApi?.AppName)
-                        ? DefaultAppName
-                        : settings.AdminApi!.AppName;
-                    primaryColor = string.IsNullOrWhiteSpace(settings.AdminApi?.PrimaryColor)
-                        ? DefaultPrimaryColor
-                        : settings.AdminApi!.PrimaryColor;
-                    logoUrl = string.IsNullOrWhiteSpace(settings.AdminApi?.LogoUrl)
-                        ? DefaultLogoUrl
-                        : settings.AdminApi!.LogoUrl;
+                    appName = string.IsNullOrWhiteSpace(settings.AdminApi?.AppName) ? DefaultAppName : settings.AdminApi!.AppName;
+                    primaryColor = string.IsNullOrWhiteSpace(settings.AdminApi?.PrimaryColor) ? DefaultPrimaryColor : settings.AdminApi!.PrimaryColor;
+                    logoUrl = string.IsNullOrWhiteSpace(settings.AdminApi?.LogoUrl) ? DefaultLogoUrl : settings.AdminApi!.LogoUrl;
 
                     bool registrationCompleted;
                     try
@@ -202,6 +194,27 @@ namespace ApiGateway.Util
                 var registerPath = BaseUrl + "/register";
                 var dataPath = BaseUrl + "/data";
                 var pluginsPath = BaseUrl + "/plugins";
+
+                if(settings.AdminApi?.AllowedIps != null && settings.AdminApi?.AllowedIps.Count > 0)
+                {
+                    var remoteIpAddress = context.Connection.RemoteIpAddress;
+                    string ip = remoteIpAddress != null ? (remoteIpAddress.IsIPv4MappedToIPv6 ? remoteIpAddress.MapToIPv4().ToString() : remoteIpAddress.ToString()) : "";
+                    if(!string.IsNullOrEmpty(settings.AdminApi?.ForwardedHeaders)){
+                        ip = context.Request.Headers[settings.AdminApi?.ForwardedHeaders].FirstOrDefault();
+                    }
+
+                    if (!IPAddress.TryParse(ip, out var ipAddr) ||
+                        !settings.AdminApi.AllowedIps.Any(r => {
+                            try { return IPAddressRange.Parse(r).Contains(ipAddr); }
+                            catch { return false; }
+                        }))
+                    {
+                        logger?.LogWarning("Request rejected: IP address {IpAddress} is not allowed.", ip);
+                        // IP inválida O no permitida → rechazar
+                        context.Response.StatusCode = StatusCodes.Status404NotFound;
+                        return;
+                    }
+                }
 
                 if (context.Request.Path.Equals(loginPath, StringComparison.OrdinalIgnoreCase) && context.Request.Method == "POST")
                 {

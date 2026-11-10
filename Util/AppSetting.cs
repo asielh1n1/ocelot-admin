@@ -134,5 +134,7 @@ namespace ApiGateway.Util
         public string AppName { get; set; } = "API Gateway";
         public string PrimaryColor { get; set; } = "#03a9f4";
         public string LogoUrl { get; set; } = "";
+        public List<string> AllowedIps { get;set; }
+        public string ForwardedHeaders { get;set; } = "";
     }
 }

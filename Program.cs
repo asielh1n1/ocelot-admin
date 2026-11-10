@@ -420,10 +420,7 @@ var pipeline = new OcelotPipelineConfiguration
             await next.Invoke();
             return;
         }
-
-        using var metadataScope = RouteMetadataAccessor.Push(
-            new RouteMetadata(context.Request.Path.Value, route.MetadataOptions?.Metadata));
-
+        using var metadataScope = RouteMetadataAccessor.Push(new RouteMetadata(context.Request.Path.Value, route.MetadataOptions?.Metadata));
         await next.Invoke();
     }
 };

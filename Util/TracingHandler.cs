@@ -26,9 +26,7 @@ namespace ApiGateway.Util
             }
 
             downstreamRoute.MetadataOptions.Metadata.TryGetValue(key, out string? url);
-            if (url.IsNotEmpty()
-                && Uri.TryCreate(url, UriKind.Absolute, out var uriResult)
-                && (uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps))
+            if (url.IsNotEmpty() && Uri.TryCreate(url, UriKind.Absolute, out var uriResult) && (uriResult.Scheme == Uri.UriSchemeHttp || uriResult.Scheme == Uri.UriSchemeHttps))
             {
                 // SSRF protection: block requests to private/internal IP ranges
                 if (IsPrivateOrReservedHost(uriResult))
@@ -53,9 +51,7 @@ namespace ApiGateway.Util
                 }
 
                 // Filter out sensitive headers before sending to trace endpoint
-                var safeHeaders = context.Request.Headers
-                    .Where(h => !SensitiveHeaders.Contains(h.Key))
-                    .ToDictionary(h => h.Key, h => h.Value.ToString());
+                var safeHeaders = context.Request.Headers.Where(h => !SensitiveHeaders.Contains(h.Key)).ToDictionary(h => h.Key, h => h.Value.ToString());
 
                 using (var httpClient = new HttpClient())
                 {
