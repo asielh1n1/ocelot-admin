@@ -74,7 +74,7 @@
 
 <script>
 import { defineComponent } from 'vue'
-import { exportFile } from 'quasar'
+import { exportFile, uid } from 'quasar'
 import  Route  from '../components/Route.vue'
 import  ChangeDownStream  from '../components/ChangeDownStream.vue'
 import  FormRoute  from '../components/RouteForm.vue'
@@ -131,7 +131,7 @@ export default defineComponent({
       this.formRoute.mode = mode
       this.formRoute.data = route
       if(mode == 'add')
-        this.formRoute.data.id = window.crypto.randomUUID()
+        this.formRoute.data.id = uid()
       this.formRoute.show = true
       
     },

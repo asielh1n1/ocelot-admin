@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import ApiGateway from '../api/api-gateway'
-import { Platform, Notify, Dialog, Loading } from 'quasar'
+import { Platform, Notify, Dialog, Loading, uid } from 'quasar'
 import i18n from '../i18n/index'
-import help from '../util/help'; 
+import help from '../util/help';
 const { t } = i18n.global
 
 const escapeHtml = (str) => String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#x27;'}[c]))
@@ -101,7 +101,7 @@ export const MainStore = defineStore('MainStore', {
         this.config = response.ocelot
         this.settings = response.settings
         this.config[OcelotKey.Enpoints] = this.config[OcelotKey.Enpoints].map(x=> {
-          x.id = window.crypto.randomUUID()
+          x.id = uid()
           return x;
         })
         this.resetChanges()
@@ -227,7 +227,7 @@ export const MainStore = defineStore('MainStore', {
     addRoute(route) {
       if(!this.config[OcelotKey.Enpoints])
         this.config[OcelotKey.Enpoints] = []
-      route.id = window.crypto.randomUUID()
+      route.id = uid()
       this.config[OcelotKey.Enpoints].push(route)
       this.registerChange()
     },

@@ -5,7 +5,7 @@
         <div class="row full-width">
           <div class="col-10 offset-1 col-sm-8 offset-sm-2 col-md-4 offset-md-4 col-lg-2 offset-lg-5">
             <q-form ref="form" greedy>
-              <q-img :src="$store.branding.logoUrl" class="items-center logo-img"/>
+              <q-img :src="$store.branding.logoUrl" class="items-center logo-img" error-src="/admin/logo.svg"/>
               <div class="text-h5 text-center q-my-md text-grey-9">{{ $t('register_title') }}</div>
               <p v-show="error" class="text-negative text-center">{{ error }}</p>
               <q-input

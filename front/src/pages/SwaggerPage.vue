@@ -85,7 +85,6 @@ export default defineComponent({
   },
   methods: {
     changeFilter(){
-      console.log('Filter:', this.filter);
       if(!this.filter)
         this.rows = this.rawData
       else {

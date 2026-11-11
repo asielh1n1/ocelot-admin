@@ -187,6 +187,7 @@
           :src="$store.branding.logoUrl"
           width="96px"
           class="brand-logo"
+          error-src="/admin/logo.svg"
         />
         <div class="text-subtitle1 q-mt-md text-grey-7">{{ $store.branding.appName }}</div>
         <div v-if="$store.branding.version" class="text-caption text-grey-5">

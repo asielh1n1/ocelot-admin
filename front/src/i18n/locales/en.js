@@ -226,6 +226,6 @@ export default {
     'registration_disabled': 'Registration has been disabled. It is only available during initial setup.',
     'validation_error': 'Invalid form.',
     'error_creating_user': 'The password does not meet the security requirements.',
-    'password_policy': 'Password must be at least 8 characters and include uppercase, lowercase, and a digit',
+    'password_policy': 'Password must be at least 8 characters and include uppercase, lowercase, and a digit'
 
 }

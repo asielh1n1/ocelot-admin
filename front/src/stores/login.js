@@ -22,7 +22,6 @@ export const LoginStore = defineStore('LoginStore', {
         this.resetForm()
         store.changePage('/')
       } catch(error){
-        console.log('Error: ', error);
         if(error.code == 'ERR_NETWORK')
           this.error = store.translate('network_error')
         else if(error.response && error.response.data)

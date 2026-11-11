@@ -1,0 +1,1 @@
+import{b as i,M as a}from"./index-DaakIk04.js";const e=a(),s=i(async({router:r})=>{r.beforeEach(async t=>!e.branding.registrationCompleted&&t.path!=="/register"?"/register":(t.meta.requiresAuth&&e.isAuthorize&&!Object.keys(e.config).length&&await e.initialize(),t.meta.requiresAuth&&!e.isAuthorize&&e.logout(),!0))});export{s as default};
