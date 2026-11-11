@@ -36,3 +36,5 @@ front/.quasar/
 appsettings.Local.json
 
 docs/
+
+appsettings.Development.json
